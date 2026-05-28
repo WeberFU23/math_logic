@@ -1,0 +1,15 @@
+.venv/
+*.egg-info
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.bak
+.DS_Store
+.idea/
+
+self_use/
+

@@ -2,11 +2,19 @@ import functools
 import sys
 from pathlib import Path
 
-import elements
-import embodied
 import numpy as np
 
-from .gym_env import DEFAULT_DUNGEON_CONFIG, make_gym_env, seed_action_space
+try:  # Dreamer dependencies are optional for the core Gymnasium package.
+    import elements
+    import embodied
+except ImportError as exc:  # pragma: no cover - depends on optional training stack.
+    elements = None
+    embodied = None
+    _DREAMER_IMPORT_ERROR = exc
+else:
+    _DREAMER_IMPORT_ERROR = None
+
+from .gym_env import DEFAULT_DUNGEON_CONFIG, seed_action_space
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +23,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-class NesyLinkEnv(embodied.Env):
+_DreamerEnvBase = object if embodied is None else embodied.Env
+
+
+class NesyLinkEnv(_DreamerEnvBase):
     LOG_EVENTS = (
         "chest_opened",
         "key_collected",
@@ -64,13 +75,21 @@ class NesyLinkEnv(embodied.Env):
         stuck_penalty_steps=30,
         stuck_penalty=-0.01,
     ):
+        if embodied is None or elements is None:
+            raise ImportError(
+                "Dreamer adapter requires the external 'embodied' and 'elements' packages. "
+                "Install your Dreamer training stack before using nesylink.wrappers.dreamer_env."
+            ) from _DREAMER_IMPORT_ERROR
+
         del task
         del stuck_penalty_enabled, stuck_penalty_steps, stuck_penalty
         from nesylink.core.constants import ACTION_NOOP
+        from nesylink.env import make_env
 
         self._config_path = self._resolve_config_path(config_path)
-        self._env = make_gym_env(
+        self._env = make_env(
             map_path=self._config_path,
+            api="gym",
             render_mode="rgb_array",
             auto_reset_on_step=False,
             move_speed_px=move_speed_px,

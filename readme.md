@@ -19,10 +19,11 @@
 From source:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/CrazyJassBread/nesylink.git
 cd NeuroLink
 python -m venv .venv
 source .venv/bin/activate
+#use '.venv\Scripts\Activate.ps1' for PowerShell
 pip install -e .
 ```
 

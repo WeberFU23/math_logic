@@ -23,8 +23,6 @@ from ..core.info import build_info
 from ..core.observation import build_observation
 from ..core.rendering import render_frame
 from ..core.state import tile_from_position_px
-from ..core.world.loader import load_map
-from ..rewards.loader import load_reward
 from .registry import register_wrapper
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,27 +67,22 @@ def make_gym_env(
     move_speed_px: float = 1.0,
     **kwargs: Any,
 ) -> gym.Env:
-    if action_repeat < 1:
-        raise ValueError("action_repeat must be >= 1")
+    """Backward-compatible factory; new code should use `nesylink.env.make_env`."""
+    from ..env import make_env
 
-    resolved_path = load_map(
+    resolved_map_path = map_path
+    if resolved_map_path is None and config_path is not None:
+        resolved_map_path = resolve_config_path(config_path)
+    if resolved_map_path is None and map_id is None:
+        resolved_map_path = DEFAULT_DUNGEON_CONFIG
+
+    return make_env(
         map_id=map_id,
-        map_path=(
-            map_path
-            if map_path is not None
-            else resolve_config_path(config_path)
-            if config_path is not None
-            else None
-        ),
-    )
-    reward_fn = load_reward(
+        map_path=resolved_map_path,
+        api="gym",
         reward_id=reward_id,
         reward_module=reward_module,
         reward_kwargs=reward_kwargs,
-    )
-    return GymDungeonEnv(
-        resolved_path,
-        reward_fn=reward_fn,
         render_mode=render_mode,
         action_repeat=action_repeat,
         max_steps=max_steps,
@@ -107,6 +100,57 @@ def seed_action_space(env: gym.Env, seed: int) -> gym.Env:
 def with_default_seed(env: gym.Env, seed: int) -> gym.Env:
     wrapped = DefaultSeedWrapper(env, seed)
     return seed_action_space(wrapped, seed)
+
+
+def build_observation_space(max_monster_slots: int) -> spaces.Dict:
+    return spaces.Dict(
+        {
+            "grid": spaces.Box(low=0, high=8, shape=(GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8),
+            "player_position_px": spaces.Box(
+                low=np.array([0.0, 0.0], dtype=np.float32),
+                high=np.array([MAP_PIXEL_WIDTH - 1.0, MAP_PIXEL_HEIGHT - 1.0], dtype=np.float32),
+                dtype=np.float32,
+            ),
+            "player_tile": spaces.Box(
+                low=np.array([0, 0], dtype=np.int32),
+                high=np.array([GRID_WIDTH - 1, GRID_HEIGHT - 1], dtype=np.int32),
+                dtype=np.int32,
+            ),
+            "health": spaces.Box(low=0, high=99, shape=(1,), dtype=np.int32),
+            "gold": spaces.Box(low=0, high=9999, shape=(1,), dtype=np.int32),
+            "keys": spaces.Box(low=0, high=99, shape=(1,), dtype=np.int32),
+            "inventory_ids": spaces.Box(
+                low=0,
+                high=max(ITEM_NAME_TO_ID.values()),
+                shape=(2,),
+                dtype=np.int32,
+            ),
+            "monsters_position_px": spaces.Box(
+                low=-1.0,
+                high=max(SCREEN_WIDTH, SCREEN_HEIGHT),
+                shape=(max_monster_slots, 2),
+                dtype=np.float32,
+            ),
+            "monsters_tile": spaces.Box(
+                low=-1,
+                high=max(GRID_WIDTH, GRID_HEIGHT),
+                shape=(max_monster_slots, 2),
+                dtype=np.int32,
+            ),
+            "monsters_active_mask": spaces.Box(
+                low=0,
+                high=1,
+                shape=(max_monster_slots,),
+                dtype=np.uint8,
+            ),
+            "monsters_hp": spaces.Box(
+                low=0,
+                high=99,
+                shape=(max_monster_slots,),
+                dtype=np.int32,
+            ),
+        }
+    )
 
 
 class BaseGameEnv(gym.Env):
@@ -141,54 +185,7 @@ class BaseGameEnv(gym.Env):
             self.engine.map_id = str(map_id)
 
         self.action_space = spaces.Discrete(len(ACTION_LABELS))
-        self.observation_space = spaces.Dict(
-            {
-                "grid": spaces.Box(low=0, high=8, shape=(GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8),
-                "player_position_px": spaces.Box(
-                    low=np.array([0.0, 0.0], dtype=np.float32),
-                    high=np.array([MAP_PIXEL_WIDTH - 1.0, MAP_PIXEL_HEIGHT - 1.0], dtype=np.float32),
-                    dtype=np.float32,
-                ),
-                "player_tile": spaces.Box(
-                    low=np.array([0, 0], dtype=np.int32),
-                    high=np.array([GRID_WIDTH - 1, GRID_HEIGHT - 1], dtype=np.int32),
-                    dtype=np.int32,
-                ),
-                "health": spaces.Box(low=0, high=99, shape=(1,), dtype=np.int32),
-                "gold": spaces.Box(low=0, high=9999, shape=(1,), dtype=np.int32),
-                "keys": spaces.Box(low=0, high=99, shape=(1,), dtype=np.int32),
-                "inventory_ids": spaces.Box(
-                    low=0,
-                    high=max(ITEM_NAME_TO_ID.values()),
-                    shape=(2,),
-                    dtype=np.int32,
-                ),
-                "monsters_position_px": spaces.Box(
-                    low=-1.0,
-                    high=max(SCREEN_WIDTH, SCREEN_HEIGHT),
-                    shape=(self.engine.max_monster_slots, 2),
-                    dtype=np.float32,
-                ),
-                "monsters_tile": spaces.Box(
-                    low=-1,
-                    high=max(GRID_WIDTH, GRID_HEIGHT),
-                    shape=(self.engine.max_monster_slots, 2),
-                    dtype=np.int32,
-                ),
-                "monsters_active_mask": spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(self.engine.max_monster_slots,),
-                    dtype=np.uint8,
-                ),
-                "monsters_hp": spaces.Box(
-                    low=0,
-                    high=99,
-                    shape=(self.engine.max_monster_slots,),
-                    dtype=np.int32,
-                ),
-            }
-        )
+        self.observation_space = build_observation_space(self.engine.max_monster_slots)
 
     def reset(
         self,
