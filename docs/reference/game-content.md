@@ -128,9 +128,9 @@ Set `complete_task: true` when reaching the exit should emit
 
 | Map id | Main content | Objective shape |
 |---|---|---|
-| `key_door` | One key chest and one locked north exit. | Open the chest, collect the key, use the locked exit. |
-| `kill_monsters` | Trap borders, one key chest, one chaser, one conditional west exit. | Defeat the monster, collect the key, use the exit. |
-| `avoid_traps` | Maze-like walls, three traps, north and south exits. | Navigate to the exit while avoiding trap damage. |
+| `task_1` | One key chest and one locked north exit. | Open the chest, collect the key, use the locked exit. |
+| `task_2` | Trap borders, one key chest, one chaser, one conditional west exit. | Defeat the monster, collect the key, use the exit. |
+| `task_3` | Maze-like walls, three traps, north and south exits. | Navigate to the exit while avoiding trap damage. |
 | `dungeon` / `prototype` | Four rooms with gold, key, heal chest, button gate, locked key gate, NPCs, traps, and all monster types. | Exploration and mechanics demonstration map. |
 
 ## Authoring Notes

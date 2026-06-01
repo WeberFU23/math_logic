@@ -1,6 +1,6 @@
 # 2026 春 数理逻辑大作业
 
-本目录说明如何把 `nesylink` 中的三个内置任务作为数理逻辑课程大作业使用。作业目标不是训练强化学习模型，而是要求同学把游戏环境抽象成形式系统，给出可检查的状态、动作、转移关系和目标公式，并实现一个能够完成任务的求解器。
+本目录说明如何把 `nesylink` 中的五个内置任务作为数理逻辑课程大作业使用。作业目标不是训练强化学习模型，而是要求同学把游戏环境抽象成形式系统，给出可检查的状态、动作、转移关系和目标公式，并实现一个能够完成任务的求解器。
 
 推荐技术路线：
 
@@ -16,24 +16,43 @@
 pip install -e .
 ```
 
-任务入口：
+Human player：
 
-```python
-from nesylink.env import make_env
-
-env = make_env(task_id="task_1")
-obs, info = env.reset(seed=0)
-obs, reward, terminated, truncated, info = env.step(1)
-env.close()
+```shell
+python -m nesylink.game --rooms nesylink/map_data/dungeons/task_1/room_001.json
+python -m nesylink.game --rooms nesylink/map_data/dungeons/task_2/room_001.json
+python -m nesylink.game --rooms nesylink/map_data/dungeons/task_3/dungeon.json
 ```
-
-三个任务已经注册在 `nesylink/tasks/builtin.py`：
 
 | task_id | 地图 | 奖励 | 最大步数 | 任务说明 |
 |---|---|---|---:|---|
 | `task_1` | `nesylink/map_data/dungeons/task_1/room_001.json` | `collect_key` | 500 | 收集钥匙并从北侧锁门离开 |
 | `task_2` | `nesylink/map_data/dungeons/task_2/room_001.json` | `kill_monster` | 500 | 击败怪物、拿钥匙、从西侧条件门离开 |
 | `task_3` | `nesylink/map_data/dungeons/task_3/dungeon.json` | `collect_key` | 500 | 穿过怪物房，去西侧房间拿钥匙，返回起点并打开东侧锁门 |
+
+## Examples 参考实现
+
+仓库的 `examples/` 目录给出了两个 Python 参考实现，用于演示如何通过当前 `nesylink` 框架接口运行内置任务：
+
+| 文件 | 对应任务 | 说明 |
+|---|---|---|
+| `examples/task1_reference.py` | `task_1` | 使用固定像素级动作序列完成“拿钥匙并通过北侧锁门”的任务。 |
+| `examples/task2_reference.py` | `task_2` | 使用从 `obs` 抽取的符号状态、邻接谓词和 BFS 子目标规划，完成当前 `task_2` 的怪物击败目标。 |
+
+运行方式：
+
+```bash
+python docs/Mathematical-logic/examples/task1_reference.py
+python docs/Mathematical-logic/examples/task2_reference.py
+```
+
+它们是本作业给出的参考实现，重点是展示：
+
+1. 如何从真实环境 `obs` 中抽取离散符号状态。
+2. 如何把 tile 级计划展开为像素级动作 replay。
+3. 如何通过 `terminated/truncated`、`info["terminal_reason"]` 和 `info["game"]["world_completed"]` 检查真实环境执行结果。
+
+> 注意：当前 `task_2` 在 `nesylink/tasks/builtin.py` 中使用 `kill_monster` 奖励；该奖励在所有怪物被击败时以 `terminal_reason == "all_monsters_defeated"` 终止。若报告中进一步讨论“拿钥匙并走到西侧条件门”的完整地图目标，应说明这是比当前 reward 终止条件更强的任务性质。
 
 ## 游戏接口
 
@@ -93,6 +112,7 @@ env.close()
 | `info["terminal_reason"]` | 终止原因，例如 `world_completed` 或 `agent_dead` |
 
 ## 交互规则
+>（TODO 目前是 Codex 胡乱生成的版本）
 
 作业中可以使用以下抽象规则：
 
