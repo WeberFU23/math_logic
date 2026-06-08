@@ -13,10 +13,13 @@ from nesylink.core.constants import (
     TILE_SIZE,
 )
 from nesylink.core.rendering.sprites import (
+    draw_abyss,
+    draw_bridge,
     draw_button,
     draw_chest,
     draw_coin,
     draw_floor,
+    draw_gap,
     draw_heal,
     draw_key,
     draw_monster,
@@ -29,7 +32,7 @@ from nesylink.core.rendering.sprites import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-OUTPUT_DIR = PROJECT_ROOT / "docs" / "assets" / "game-content"
+OUTPUT_DIR = PROJECT_ROOT / "assets" / "game-content"
 SCALE = 4
 
 
@@ -57,6 +60,9 @@ def main() -> None:
     _save_tile("chest-gold", lambda frame: draw_chest(frame, 0, 0, opened=False, loot_kind="gold"))
     _save_tile("chest-heal", lambda frame: draw_chest(frame, 0, 0, opened=False, loot_kind="heal"))
     _save_tile("trap", lambda frame: draw_trap(frame, 0, 0))
+    _save_tile("trap-abyss", lambda frame: draw_abyss(frame, 0, 0))
+    _save_tile("gap", lambda frame: draw_gap(frame, 0, 0))
+    _save_tile("bridge", lambda frame: draw_bridge(frame, 0, 0))
     _save_tile("button", lambda frame: draw_button(frame, 0, 0, pressed=False))
     _save_tile("button-pressed", lambda frame: draw_button(frame, 0, 0, pressed=True))
     _save_tile("npc", lambda frame: draw_npc(frame, 0, 0, COLOR_NPC))

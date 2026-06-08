@@ -11,9 +11,12 @@ from nesylink.env import make_env
 Supported forms:
 
 ```python
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 env = make_env(map_id="dungeon", reward_id="sparse_exit", max_steps=500)
-env = make_env(map_path="nesylink/map_data/dungeons/prototype/dungeon.json", reward_id="collect_key")
+env = make_env(
+    map_path="nesylink/map_data/mathematical_logic/task_5/dungeon.json",
+    reward_id="mathematical_logic/task_5",
+)
 env = make_env(map_id="dungeon", reward_module="nesylink.rewards.exploration")
 ```
 
@@ -23,7 +26,7 @@ Gymnasium registered form:
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 ```
 
 Parameters:
@@ -75,7 +78,7 @@ Default slot behavior:
 
 - `A` starts with `sword`
 - `B` starts with `shield`
-- `A` first tries chest/NPC interaction; if nothing is interactable, it uses the equipped `A` item
+- `A` first tries adjacent chest, NPC, or switch interaction; if nothing is interactable, it uses the equipped `A` item
 - `shield` blocks contact damage and never damages monsters
 - `sword` handles melee damage with a one-tile forward hitbox
 - action poses remain visible for multiple ticks in RGB renders, but damage/block resolution still happens on the triggering step only
@@ -113,6 +116,15 @@ Additional fields exposed by this version:
 - `info["debug"]["action_item"]`
 - `info["debug"]["action_pose"]`
 - `info["debug"]["action_ticks_remaining"]`
+- `info["debug"]["control_lock_steps_remaining"]`
+- `info["debug"]["pending_respawn_tile"]`
+- `info["dynamic"]["objects"]`
+- `info["dynamic"]["current_room_tiles"]`
+
+Dynamic info is useful for bridge/switch tasks. `info["dynamic"]["objects"]`
+maps dynamic object ids to their kind, owning room id, and current state.
+`info["dynamic"]["current_room_tiles"]` lists runtime dynamic tiles in the
+current room, such as `gap` and `bridge`.
 
 ## Observation Shape
 
@@ -134,6 +146,23 @@ Common keys:
 
 Use `env.observation_space` for exact bounds in code.
 
+The `grid` observation uses these tile codes:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Empty floor |
+| 1 | Wall |
+| 2 | Player |
+| 3 | Monster |
+| 4 | Closed chest |
+| 5 | Exit tile |
+| 6 | Active trap |
+| 7 | Button |
+| 8 | NPC |
+| 9 | Gap |
+| 10 | Bridge |
+| 11 | Switch |
+
 With `observation_mode="grid"`, pixel-coordinate keys are omitted. The grid
 observation keys are:
 
@@ -150,7 +179,7 @@ observation keys are:
 ## Rendering
 
 ```python
-env = make_env(task_id="collect_key_easy", render_mode="rgb_array")
+env = make_env(task_id="mathematical_logic/task_1", render_mode="rgb_array")
 obs, info = env.reset(seed=0)
 frame = env.render()
 ```

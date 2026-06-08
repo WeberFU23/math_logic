@@ -27,7 +27,7 @@ from ..core.state import tile_from_position_px
 from .registry import register_wrapper
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DUNGEON_CONFIG = PROJECT_ROOT / "nesylink" / "map_data" / "dungeons" / "prototype" / "dungeon.json"
+DEFAULT_DUNGEON_CONFIG = PROJECT_ROOT / "nesylink" / "map_data" / "mathematical_logic" / "task_5" / "dungeon.json"
 
 
 class DefaultSeedWrapper(gym.Wrapper):

@@ -7,12 +7,12 @@ from .base import BaseReward
 
 
 BUILTIN_REWARD_MODULES = {
-    "sparse_exit": "nesylink.rewards.sparse_exit",
-    "collect_key": "nesylink.rewards.collect_key",
-    "collect_gold": "nesylink.rewards.collect_gold",
-    "kill_monster": "nesylink.rewards.kill_monster",
-    "exploration": "nesylink.rewards.exploration",
     "custom_reward": "nesylink.rewards.custom_template",
+    "mathematical_logic/task_1": "nesylink.rewards.mathematical_logic.task_1",
+    "mathematical_logic/task_2": "nesylink.rewards.mathematical_logic.task_2",
+    "mathematical_logic/task_3": "nesylink.rewards.mathematical_logic.task_3",
+    "mathematical_logic/task_4": "nesylink.rewards.mathematical_logic.task_4",
+    "mathematical_logic/task_5": "nesylink.rewards.mathematical_logic.task_5",
 }
 
 

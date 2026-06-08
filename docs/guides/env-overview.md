@@ -11,7 +11,7 @@ rewiring the rest of the environment.
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 obs, info = env.reset(seed=0)
 
 done = False
@@ -29,7 +29,7 @@ The direct factory gives more control:
 from nesylink.env import make_env
 
 env = make_env(
-    task_id="collect_key_easy",
+    task_id="mathematical_logic/task_1",
     max_steps=500,
     render_mode="rgb_array",
 )
@@ -63,14 +63,16 @@ Runtime responsibilities:
 
 | task_id | Gymnasium ID | Map | Reward |
 |---|---|---|---|
-| `collect_key_easy` | `NesyLink-CollectKeyEasy-v0` | `key_door` | `collect_key` |
-| `kill_monsters_easy` | `NesyLink-KillMonstersEasy-v0` | `kill_monsters` | `kill_monster` |
-| `avoid_traps_easy` | `NesyLink-AvoidTrapsEasy-v0` | `avoid_traps` | `sparse_exit` |
+| `mathematical_logic/task_1` | `NesyLink-MathematicalLogic-Task1-v0` | `mathematical_logic/task_1` | `mathematical_logic/task_1` |
+| `mathematical_logic/task_2` | `NesyLink-MathematicalLogic-Task2-v0` | `mathematical_logic/task_2` | `mathematical_logic/task_2` |
+| `mathematical_logic/task_3` | `NesyLink-MathematicalLogic-Task3-v0` | `mathematical_logic/task_3` | `mathematical_logic/task_3` |
+| `mathematical_logic/task_4` | `NesyLink-MathematicalLogic-Task4-v0` | `mathematical_logic/task_4` | `mathematical_logic/task_4` |
+| `mathematical_logic/task_5` | `NesyLink-MathematicalLogic-Task5-v0` | `mathematical_logic/task_5` | `mathematical_logic/task_5` |
 
 Use a built-in task when you want a stable, named environment:
 
 ```python
-env = make_env(task_id="kill_monsters_easy")
+env = make_env(task_id="mathematical_logic/task_2")
 ```
 
 Use direct map/reward construction when experimenting:

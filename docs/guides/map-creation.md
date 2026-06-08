@@ -6,22 +6,22 @@ task specs.
 
 ## File Layout
 
-Built-in maps live under:
+Built-in themed maps live under:
 
 ```text
-nesylink/map_data/dungeons/
+nesylink/map_data/<theme>/
 ```
 
 Supported lookup patterns:
 
-- `nesylink/map_data/dungeons/<map_id>/dungeon.json`
-- `nesylink/map_data/dungeons/<map_id>/room_001.json`
-- `nesylink/map_data/dungeons/<map_id>.json`
+- `nesylink/map_data/<theme>/<task_name>/dungeon.json`
+- `nesylink/map_data/<theme>/<task_name>/room_001.json`
+- `nesylink/map_data/<theme>/<task_name>.json`
 
-That means this works when `room_001.json` exists under `key_door/`:
+That means this works when `room_001.json` exists under `mathematical_logic/task_1/`:
 
 ```python
-env = make_env(map_id="key_door", reward_id="collect_key")
+env = make_env(map_id="mathematical_logic/task_1", reward_id="mathematical_logic/task_1")
 ```
 
 ## Standalone Room
@@ -91,6 +91,11 @@ Traps support two runtime types. The default `spike` trap keeps the original
 behavior: stepping on it deals damage and immediately respawns the player at the
 room spawn named by `respawn_to`.
 
+| Demo | Trap type |
+|---|---|
+| <img src="../../assets/game-content/trap.png" width="64" alt="Spike trap demo"> | `spike` |
+| <img src="../../assets/game-content/trap-abyss.png" width="64" alt="Abyss trap demo"> | `abyss` |
+
 ```json
 {
   "id": "spike_1",
@@ -156,6 +161,11 @@ their current state without changing the static `layout`. `gap` is not passable;
 `bridge` is passable. The first supported dynamic object kind is
 `rotating_bridge`:
 
+| Demo | Dynamic tile |
+|---|---|
+| <img src="../../assets/game-content/gap.png" width="64" alt="Gap tile demo"> | `gap` |
+| <img src="../../assets/game-content/bridge.png" width="64" alt="Bridge tile demo"> | `bridge` |
+
 ```json
 {
   "dynamic_objects": [
@@ -195,6 +205,11 @@ Chests can be hidden until a generic environment event reveals them:
 ```
 
 Item loot may also grant and equip a tool:
+
+| Demo | Loot JSON intent |
+|---|---|
+| <img src="../../assets/game-content/sword.png" width="96" alt="Sword item demo"> | Add `sword` to inventory/tools and equip it to slot A. |
+| <img src="../../assets/game-content/shield.png" width="96" alt="Shield item demo"> | Add `shield` to inventory/tools and equip it to slot B. |
 
 ```json
 {

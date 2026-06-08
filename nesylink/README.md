@@ -9,7 +9,7 @@ Built-in task form:
 ```python
 from nesylink.env import make_env
 
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 ```
 
 Gymnasium registry form:
@@ -18,11 +18,12 @@ Gymnasium registry form:
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-v0", task_id="mathematical_logic/task_1")
 ```
 
 Direct map-plus-reward form:
 
+>  TODO: 目前的 nesylink 仍在更改，需要调整说明文档
 ```python
 from nesylink.env import make_env
 
@@ -37,7 +38,7 @@ Equivalent custom-path form:
 
 ```python
 env = make_env(
-    map_path="nesylink/map_data/dungeons/prototype/dungeon.json",
+    map_path="nesylink/map_data/mathematical_logic/task_5/dungeon.json",
     reward_module="nesylink.rewards.collect_key",
     reward_kwargs={"step": -0.01, "keys_delta": 5.0},
 )
@@ -46,7 +47,7 @@ env = make_env(
 Human-play / debug entrypoint:
 
 ```bash
-python -m nesylink.game --rooms nesylink/map_data/dungeons/prototype/dungeon.json
+python -m nesylink.game --rooms nesylink/map_data/mathematical_logic/task_5/dungeon.json
 ```
 use z for slot A and x for slot B. hold for multi-tile interactions like chests and NPCs.
 

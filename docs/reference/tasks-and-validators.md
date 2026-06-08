@@ -6,22 +6,21 @@ map JSON.
 
 ## Built-in Tasks
 
-- `collect_key_easy` -> `NesyLink-CollectKeyEasy-v0`
-- `kill_monsters_easy` -> `NesyLink-KillMonstersEasy-v0`
-- `avoid_traps_easy` -> `NesyLink-AvoidTrapsEasy-v0`
-- `task_1_easy` -> `task_1_easy`
-- `task_2_easy` -> `task_2_easy`
-- `task_3_easy` -> `task_3_easy`
+- `mathematical_logic/task_1` -> `NesyLink-MathematicalLogic-Task1-v0`
+- `mathematical_logic/task_2` -> `NesyLink-MathematicalLogic-Task2-v0`
+- `mathematical_logic/task_3` -> `NesyLink-MathematicalLogic-Task3-v0`
+- `mathematical_logic/task_4` -> `NesyLink-MathematicalLogic-Task4-v0`
+- `mathematical_logic/task_5` -> `NesyLink-MathematicalLogic-Task5-v0`
 
-The `task_*_easy` variants reuse the existing task maps and rewards, but expose
-tile-level control and grid-only observations.
+Task ids use `theme/task_name` so future themes can reuse names like `task_1`
+without colliding.
 
 ## Use a Task
 
 ```python
 from nesylink.env import make_env
 
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 ```
 
 or through Gymnasium:
@@ -30,7 +29,7 @@ or through Gymnasium:
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 ```
 
 ## Register a Custom Task

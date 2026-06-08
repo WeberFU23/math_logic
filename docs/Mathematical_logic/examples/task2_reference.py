@@ -230,7 +230,7 @@ class SymbolicAgent:
 
 
 def run(seed: int = 0, max_steps: int = 500) -> dict:
-    env = make_env(task_id="task_2")
+    env = make_env(task_id="mathematical_logic/task_2")
     obs, info = env.reset(seed=seed)
     agent = SymbolicAgent()
     fixed_exits = extract_symbolic_state(obs).exits

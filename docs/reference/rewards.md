@@ -8,12 +8,12 @@ and may provide default reward settings.
 
 | reward_id | Module | Intended use |
 |---|---|---|
-| `sparse_exit` | `nesylink.rewards.sparse_exit` | reward mostly on reaching an exit |
-| `collect_key` | `nesylink.rewards.collect_key` | key-door tasks |
-| `collect_gold` | `nesylink.rewards.collect_gold` | treasure collection tasks |
-| `kill_monster` | `nesylink.rewards.kill_monster` | combat tasks |
-| `exploration` | `nesylink.rewards.exploration` | room traversal and discovery |
 | `custom_reward` | `nesylink.rewards.custom_template` | starter template |
+| `mathematical_logic/task_1` | `nesylink.rewards.mathematical_logic.task_1` | mathematical logic key-door task |
+| `mathematical_logic/task_2` | `nesylink.rewards.mathematical_logic.task_2` | mathematical logic monster/key/exit task |
+| `mathematical_logic/task_3` | `nesylink.rewards.mathematical_logic.task_3` | mathematical logic multi-room return task |
+| `mathematical_logic/task_4` | `nesylink.rewards.mathematical_logic.task_4` | mathematical logic bridge/equipment/guardian task |
+| `mathematical_logic/task_5` | `nesylink.rewards.mathematical_logic.task_5` | mathematical logic multi-room exploration task |
 
 ## BaseReward
 
@@ -22,7 +22,7 @@ and may provide default reward settings.
 Responsibilities:
 
 - maintain `prev_obs` / `prev_info`
-- extract stable reward signals from `obs/info/action`
+- extract stable reward signals from `prev_obs/obs/prev_info/info/action`
 - compute weighted reward via `reward_weights`
 - support task-specific shaping via `extra_reward()`
 - support task-specific termination via `check_termination()`
@@ -36,12 +36,31 @@ Common signals:
 - `keys_delta`
 - `monster_hit`
 - `monster_kill`
+- `key_collected`
+- `gold_collected`
+- `item_collected`
+- `agent_healed`
+- `agent_damaged`
+- `trap_triggered`
+- `abyss_fall`
+- `shield_block`
 - `door_opened`
 - `chest_opened`
+- `chest_revealed`
+- `button_pressed`
+- `switch_activated`
+- `bridge_rotated`
+- `dynamic_object_state_changed`
+- `talked_npc`
 - `room_changed`
 - `exit_reached`
+- `environment_completed`
+- `world_completed`
 - `death`
 - `invalid_action`
+- `player_tile_changed`
+- `monster_hp_total`
+- `active_monsters`
 
 `BaseReward.compute_reward(...)` multiplies each signal by its configured
 weight, then adds any `extra_reward(...)` returned by a subclass.
@@ -53,15 +72,15 @@ Use a built-in reward:
 ```python
 from nesylink.env import make_env
 
-env = make_env(map_id="key_door", reward_id="collect_key")
+env = make_env(map_id="mathematical_logic/task_1", reward_id="mathematical_logic/task_1")
 ```
 
 Override weights:
 
 ```python
 env = make_env(
-    map_id="key_door",
-    reward_id="collect_key",
+    map_id="mathematical_logic/task_1",
+    reward_id="mathematical_logic/task_1",
     reward_kwargs={
         "step": -0.01,
         "keys_delta": 5.0,

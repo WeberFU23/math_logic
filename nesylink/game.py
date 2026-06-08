@@ -77,7 +77,7 @@ class ZeldaLikeGame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Dual-resolution Zelda-style pygame prototype")
     default_room_file = (
-        Path(__file__).resolve().parent / "map_data" / "dungeons" / "prototype" / "dungeon.json"
+        Path(__file__).resolve().parent / "map_data" / "mathematical_logic" / "task_5" / "dungeon.json"
     )
     parser.add_argument(
         "--rooms",

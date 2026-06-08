@@ -41,7 +41,7 @@ def build_plan() -> list[int]:
 
 
 def run(seed: int = 0) -> dict:
-    env = make_env(task_id="task_1")
+    env = make_env(task_id="mathematical_logic/task_1")
     obs, info = env.reset(seed=seed)
 
     total_reward = 0.0

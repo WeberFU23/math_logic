@@ -542,7 +542,7 @@ theorem bfsVisited_complete_for_bounded_goal
 /-!
   A concrete witness for the simplified `task_2` model.
 
-  This abstracts the map in `nesylink/map_data/dungeons/task_2/room_001.json`.
+  This abstracts the map in `nesylink/map_data/mathematical_logic/task_2/room_001.json`.
   The real environment gives the monster HP 2, while `Step.attackMonster` above
   follows `z_new_km_fw2.py`'s simplified symbolic model where one attack removes
   an adjacent monster.

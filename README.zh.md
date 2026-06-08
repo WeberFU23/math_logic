@@ -41,7 +41,7 @@ pip install -e ".[dreamer]"  # Dreamer 风格图像处理依赖
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 obs, info = env.reset(seed=0)
 
 obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
@@ -55,7 +55,7 @@ env.close()
 from nesylink.env import make_env
 
 env = make_env(
-    task_id="collect_key_easy",
+    task_id="mathematical_logic/task_1",
     max_steps=500,
     reward_kwargs={"step": -0.01},
 )
@@ -65,9 +65,11 @@ env = make_env(
 
 | task_id | Gymnasium ID | 目标 |
 |---|---|---|
-| `collect_key_easy` | `NesyLink-CollectKeyEasy-v0` | 收集钥匙并打开出口。 |
-| `kill_monsters_easy` | `NesyLink-KillMonstersEasy-v0` | 击败怪物、收集钥匙并到达出口。 |
-| `avoid_traps_easy` | `NesyLink-AvoidTrapsEasy-v0` | 避开陷阱并到达出口。 |
+| `mathematical_logic/task_1` | `NesyLink-MathematicalLogic-Task1-v0` | 收集钥匙并打开出口。 |
+| `mathematical_logic/task_2` | `NesyLink-MathematicalLogic-Task2-v0` | 击败怪物、收集钥匙并到达出口。 |
+| `mathematical_logic/task_3` | `NesyLink-MathematicalLogic-Task3-v0` | 跨房间收集钥匙，返回起点并打开出口。 |
+| `mathematical_logic/task_4` | `NesyLink-MathematicalLogic-Task4-v0` | 旋转桥、收集装备、击败守卫并打开最终宝箱。 |
+| `mathematical_logic/task_5` | `NesyLink-MathematicalLogic-Task5-v0` | 探索多房间地牢并完成宝箱目标。 |
 
 在 Python 中查看任务：
 
@@ -104,8 +106,8 @@ nesylink/
 
 ```python
 env = make_env(
-    map_id="key_door",
-    reward_id="collect_key",
+    map_id="mathematical_logic/task_1",
+    reward_id="mathematical_logic/task_1",
     reward_kwargs={
         "step": -0.01,
         "keys_delta": 5.0,
@@ -123,7 +125,7 @@ env = make_env(
 训练前先跑随机策略 smoke test：
 
 ```python
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 obs, info = env.reset(seed=0)
 
 for _ in range(100):

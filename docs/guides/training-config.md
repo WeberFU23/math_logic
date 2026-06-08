@@ -11,7 +11,7 @@ Use Gymnasium IDs for stable built-in tasks:
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 ```
 
 Use `make_env(...)` for experiments:
@@ -47,7 +47,7 @@ Run this before training a real agent:
 ```python
 from nesylink.env import make_env
 
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 obs, info = env.reset(seed=0)
 total_reward = 0.0
 
@@ -68,7 +68,7 @@ For a standard on-policy algorithm, start with:
 
 ```python
 env = make_env(
-    task_id="collect_key_easy",
+    task_id="mathematical_logic/task_1",
     max_steps=500,
     reward_kwargs={
         "step": -0.01,
@@ -94,7 +94,7 @@ Use `render_mode="rgb_array"` and call `env.render()` when your training stack
 expects pixels:
 
 ```python
-env = make_env(task_id="avoid_traps_easy", render_mode="rgb_array")
+env = make_env(task_id="mathematical_logic/task_5", render_mode="rgb_array")
 obs, info = env.reset(seed=0)
 image = env.render()
 ```

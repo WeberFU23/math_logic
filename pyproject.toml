@@ -22,4 +22,4 @@ dreamer = ["pillow>=10"]
 include = ["nesylink*"]
 
 [tool.setuptools.package-data]
-nesylink = ["map_data/dungeons/**/*.json"]
+nesylink = ["map_data/**/*.json"]

@@ -4,7 +4,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-BUILTIN_DUNGEON_ROOT = PROJECT_ROOT / "nesylink" / "map_data" / "dungeons"
+BUILTIN_MAP_ROOT = PROJECT_ROOT / "nesylink" / "map_data"
+BUILTIN_DUNGEON_ROOT = BUILTIN_MAP_ROOT / "dungeons"
 
 
 def load_map(*, map_id: str | None = None, map_path: str | Path | None = None) -> Path:
@@ -16,7 +17,18 @@ def load_map(*, map_id: str | None = None, map_path: str | Path | None = None) -
     normalized = str(map_id).strip()
     candidates = []
     if normalized == "dungeon":
+        candidates.append(BUILTIN_MAP_ROOT / "mathematical_logic" / "task_5" / "dungeon.json")
         candidates.append(BUILTIN_DUNGEON_ROOT / "prototype" / "dungeon.json")
+    if "/" in normalized:
+        theme, task_name = normalized.split("/", 1)
+        if theme and task_name and "-" not in theme:
+            candidates.extend(
+                [
+                    BUILTIN_MAP_ROOT / theme / task_name / "dungeon.json",
+                    BUILTIN_MAP_ROOT / theme / task_name / "room_001.json",
+                    BUILTIN_MAP_ROOT / theme / f"{task_name}.json",
+                ]
+            )
     candidates.extend(
         [
             BUILTIN_DUNGEON_ROOT / normalized / "dungeon.json",

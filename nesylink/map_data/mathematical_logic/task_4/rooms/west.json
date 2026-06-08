@@ -20,7 +20,7 @@
     {
       "id": "bridge_switch",
       "kind": "switch",
-      "pos": [6, 4],
+      "pos": [4, 4],
       "activation": "interact",
       "message": "BRIDGE TURN",
       "effect": {

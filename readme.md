@@ -14,7 +14,7 @@
 
 `nesylink` provides a small, configurable dungeon game environment for RL experiments. It separates game mechanics, JSON maps, Python task specs, reward modules, and Gymnasium wrappers so users can start with built-in tasks or compose new environments without changing the core engine.
 
-> 对于 26 年春季数理逻辑课程的大作业设置，详情见 [数理逻辑大作业说明](docs/Mathematical-logic/readme.md)。
+> 对于 26 年春季数理逻辑课程的大作业设置，详情见 [数理逻辑大作业说明](docs/Mathematical_logic/readme.md)。
 
 ## Installation
 
@@ -44,7 +44,7 @@ Use Gymnasium registration:
 import gymnasium as gym
 import nesylink
 
-env = gym.make("NesyLink-CollectKeyEasy-v0")
+env = gym.make("NesyLink-MathematicalLogic-Task1-v0")
 obs, info = env.reset(seed=0)
 
 obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
@@ -58,7 +58,7 @@ Use the direct factory when you want to override task defaults:
 from nesylink.env import make_env
 
 env = make_env(
-    task_id="collect_key_easy",
+    task_id="mathematical_logic/task_1",
     max_steps=500,
     reward_kwargs={"step": -0.01},
 )
@@ -68,9 +68,11 @@ env = make_env(
 
 | task_id | Gymnasium ID | Objective |
 |---|---|---|
-| `collect_key_easy` | `NesyLink-CollectKeyEasy-v0` | Collect a key and open the exit. |
-| `kill_monsters_easy` | `NesyLink-KillMonstersEasy-v0` | Defeat the monster, collect the key, and exit. |
-| `avoid_traps_easy` | `NesyLink-AvoidTrapsEasy-v0` | Reach the exit while avoiding traps. |
+| `mathematical_logic/task_1` | `NesyLink-MathematicalLogic-Task1-v0` | Collect a key and open the exit. |
+| `mathematical_logic/task_2` | `NesyLink-MathematicalLogic-Task2-v0` | Defeat the monster, collect the key, and exit. |
+| `mathematical_logic/task_3` | `NesyLink-MathematicalLogic-Task3-v0` | Travel across rooms, collect the key, return, and unlock the exit. |
+| `mathematical_logic/task_4` | `NesyLink-MathematicalLogic-Task4-v0` | Rotate the bridge, collect equipment, defeat the guardian, and open the final chest. |
+| `mathematical_logic/task_5` | `NesyLink-MathematicalLogic-Task5-v0` | Explore the multi-room dungeon and complete its chest objectives. |
 
 List tasks in Python:
 
@@ -107,8 +109,8 @@ Select built-in rewards by `reward_id`:
 
 ```python
 env = make_env(
-    map_id="key_door",
-    reward_id="collect_key",
+    map_id="mathematical_logic/task_1",
+    reward_id="mathematical_logic/task_1",
     reward_kwargs={
         "step": -0.01,
         "keys_delta": 5.0,
@@ -126,7 +128,7 @@ See [reward reference](docs/reference/rewards.md).
 Start with a random rollout smoke test:
 
 ```python
-env = make_env(task_id="collect_key_easy")
+env = make_env(task_id="mathematical_logic/task_1")
 obs, info = env.reset(seed=0)
 
 for _ in range(100):
