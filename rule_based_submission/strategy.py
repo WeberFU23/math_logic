@@ -208,14 +208,15 @@ class RuleBasedPolicy(HighLevelPolicy):
         forward = self._avoid_entry_side(state, memory, candidates)
         candidates = forward or candidates
 
-        def rank(goal: Goal) -> tuple[int, int, int, int, Position]:
+        def rank(goal: Goal) -> tuple[int, int, int, int, int, Position]:
             target = goal.target or state.player
             neighbor = self._neighbor_room(state.room, target)
             unvisited = 0 if neighbor is not None and neighbor not in memory.room_memory else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
+            blocked_approach = 1 if self._exit_approach_blocked(state, target) else 0
             key_bonus = 0 if state.keys > 0 and target[0] == 9 else 1
             entry = 1 if self._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
-            return (used, unvisited, entry, key_bonus + manhattan(state.player, target), target)
+            return (used, blocked_approach, unvisited, entry, key_bonus + manhattan(state.player, target), target)
 
         return min(candidates, key=rank)
 
@@ -258,6 +259,20 @@ class RuleBasedPolicy(HighLevelPolicy):
             if unopened or mechanisms or (state.has_sword and unkilled):
                 rooms.add(room)
         return rooms
+
+    def _exit_approach_blocked(self, state: SymbolicState, exit_pos: Position) -> bool:
+        col, row = exit_pos
+        if col == 0:
+            approach = (1, row)
+        elif col == 9:
+            approach = (8, row)
+        elif row == 0:
+            approach = (col, 1)
+        elif row == 7:
+            approach = (col, 6)
+        else:
+            return False
+        return approach in (state.walls | state.traps | state.gaps | state.chests | state.monsters)
 
     def _neighbor_room(self, room: RoomCoord, exit_pos: Position) -> RoomCoord | None:
         col, row = exit_pos
