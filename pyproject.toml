@@ -18,6 +18,11 @@ dependencies = [
 dev = []
 pygame = ["pygame>=2.5"]
 dreamer = ["pillow>=10"]
+rl = [
+  "stable-baselines3>=2.9,<3.0",
+  "sb3-contrib>=2.9,<3.0",
+  "tensorboard>=2.21",
+]
 
 [tool.setuptools.packages.find]
 include = ["nesylink*"]

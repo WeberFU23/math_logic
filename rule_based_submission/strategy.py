@@ -255,6 +255,56 @@ class RuleBasedPolicy(HighLevelPolicy):
             return False
         return approach in (state.walls | state.traps | state.gaps | state.chests | state.monsters)
 
+    def _route_to_known_progress_room(self, state: SymbolicState, memory: AgentMemory) -> Goal | None:
+        target_rooms = self._known_progress_rooms(state, memory)
+        if not target_rooms:
+            return None
+        reachable_exits = self._reachable_goals(state, GoalKind.GO_TO_EXIT, self._door_exits(state))
+        if not reachable_exits:
+            return None
+
+        current = state.room
+        target_room = min(target_rooms, key=lambda room: (self._room_distance(current, room), room))
+
+        def rank(goal: Goal) -> tuple[int, int, int, Position]:
+            target = goal.target or state.player
+            neighbor = self._neighbor_room(current, target)
+            if neighbor is None:
+                return (99, manhattan(state.player, target), 99, target)
+            before = self._room_distance(current, target_room)
+            after = self._room_distance(neighbor, target_room)
+            improves = 0 if after < before else 1
+            used = 1 if globalize(state.room, target) in memory.used_exits else 0
+            return (improves, after, used, target)
+
+        return min(reachable_exits, key=rank)
+
+    def _known_progress_rooms(self, state: SymbolicState, memory: AgentMemory) -> set[RoomCoord]:
+        rooms: set[RoomCoord] = set()
+        for room, snapshot in memory.room_memory.items():
+            if room == state.room:
+                continue
+            unopened = {pos for pos in snapshot.chests if globalize(room, pos) not in memory.opened_chests}
+            unkilled = {
+                pos for pos in snapshot.monsters
+                if globalize(room, pos) not in memory.killed_monsters
+            }
+            mechanisms = {
+                pos for pos in (snapshot.switches | snapshot.buttons)
+                if globalize(room, pos) not in memory.activated_switches
+                and globalize(room, pos) not in memory.opened_chests
+            }
+            # A key is useful in a previously observed locked-door room.  Keep
+            # that semantic fact in memory so returning from a remote key room
+            # is directed toward progress instead of an arbitrary used exit.
+            unlockable = state.keys > 0 and bool(snapshot.locked_exits)
+            if unopened or mechanisms or unlockable or (state.has_sword and unkilled):
+                rooms.add(room)
+        return rooms
+
+    def _room_distance(self, left: RoomCoord, right: RoomCoord) -> int:
+        return abs(left[0] - right[0]) + abs(left[1] - right[1])
+
     def _neighbor_room(self, room: RoomCoord, exit_pos: Position) -> RoomCoord | None:
         col, row = exit_pos
         if row == 0:
@@ -299,8 +349,6 @@ class RuleBasedPolicy(HighLevelPolicy):
 class RLHighLevelPolicy(HighLevelPolicy):
     def choose_goal(self, state: SymbolicState, memory: AgentMemory) -> Goal:
         raise NotImplementedError("Plug a trained RL goal selector in here.")
-
-
 
 
 

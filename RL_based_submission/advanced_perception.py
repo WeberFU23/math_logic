@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+
+from RL_based_submission.vision_extractor import (
+    ABYSS,
+    BRIDGE,
+    BUTTON,
+    CHEST,
+    GAP,
+    NPC,
+    SWITCH,
+    TRAP,
+    WALL,
+    SymbolicFrame,
+    VisionExtractor,
+)
+from rule_based_submission.symbolic import AgentMemory, SymbolicState
+from rule_based_submission.symbolic import ACTION_LEFT, ACTION_RIGHT
+
+
+Position = tuple[int, int]
+
+
+@dataclass
+class AdvancedPerceptor:
+    """Convert the template-based visual extractor into the shared symbolic state.
+
+    Only pixels and the explicitly allowed inventory portion of ``info`` affect
+    the returned state.  Hidden agent coordinates, room coordinates, entity
+    lists, dynamic-object state, and event records are deliberately ignored.
+    """
+
+    memory: AgentMemory = field(default_factory=AgentMemory)
+    extractor: VisionExtractor = field(default_factory=lambda: VisionExtractor(use_memory=True))
+    last_frame: SymbolicFrame | None = None
+    last_player: Position | None = None
+
+    def reset(self, *, task_id: str | None = None) -> None:
+        self.memory.reset(task_id=task_id)
+        self.extractor.reset()
+        self.last_frame = None
+        self.last_player = None
+
+    def reset_room_vision(self) -> None:
+        """Prevent static-memory pixels from one room leaking into the next."""
+
+        self.extractor.reset()
+        self.last_frame = None
+        self.last_player = None
+
+    def perceive(self, obs: Any, info: dict[str, Any] | None = None) -> SymbolicState:
+        frame = self.extractor.extract(np.asarray(obs))
+        self.last_frame = frame
+
+        positions: dict[str, set[Position]] = {}
+        exits: set[Position] = set()
+        exit_labels: dict[Position, str] = {}
+        for row in range(frame.static.shape[0]):
+            for col in range(frame.static.shape[1]):
+                label = str(frame.static[row, col])
+                positions.setdefault(label, set()).add((col, row))
+                if label.startswith("exit_"):
+                    exits.add((col, row))
+                    exit_labels[(col, row)] = label
+
+        player = frame.player.anchor_tile if frame.player is not None else self._fallback_player()
+        if frame.player is not None:
+            self.last_player = player
+        player_position_px = self._player_position_px(frame)
+        monsters = {entity.anchor_tile for entity in frame.monsters}
+        keys, gold, has_sword, has_shield, has_heal = _allowed_inventory(info)
+
+        return SymbolicState(
+            player=player,
+            player_position_px=player_position_px,
+            room=self.memory.room,
+            walls=set(positions.get(WALL, set())),
+            chests=set(positions.get(CHEST, set())),
+            monsters=monsters,
+            exits=exits,
+            traps=set(positions.get(TRAP, set())) | set(positions.get(ABYSS, set())),
+            # Pressed variants are intentionally not actionable again.
+            buttons=set(positions.get(BUTTON, set())),
+            switches=set(positions.get(SWITCH, set())),
+            bridges=set(positions.get(BRIDGE, set())),
+            gaps=set(positions.get(GAP, set())),
+            npcs=set(positions.get(NPC, set())),
+            exit_labels=exit_labels,
+            keys=keys,
+            health=None,
+            has_sword=has_sword,
+            has_shield=has_shield,
+        )
+
+    def inventory_features(self, info: dict[str, Any] | None) -> tuple[int, int, bool, bool, bool]:
+        return _allowed_inventory(info)
+
+    def _fallback_player(self) -> Position:
+        # The last visually observed player position is safer than inventing the
+        # room center.  At the first frame, retain the legacy center fallback.
+        return self.last_player or (4, 4)
+
+    def _player_position_px(self, frame: SymbolicFrame) -> tuple[float, float] | None:
+        if frame.player is None:
+            return None
+        center_x, center_y = frame.player.center_px
+        # The colored sprite bbox is asymmetric for side-facing frames.
+        if self.memory.facing_action == ACTION_LEFT:
+            left = center_x - 8.5
+        elif self.memory.facing_action == ACTION_RIGHT:
+            left = center_x - 6.5
+        else:
+            left = center_x - 7.5
+        return (float(round(left)), float(round(center_y - 7.5)))
+
+
+def _allowed_inventory(info: dict[str, Any] | None) -> tuple[int, int, bool, bool, bool]:
+    inventory = info.get("inventory", {}) if isinstance(info, dict) else {}
+    if not isinstance(inventory, dict):
+        inventory = {}
+
+    keys = _safe_int(inventory.get("keys", 0))
+    gold = _safe_int(inventory.get("gold", 0))
+    text = f"{inventory.get('equipped', {})} {inventory.get('items', [])} {inventory.get('tools', [])}".lower()
+    return (
+        max(0, keys),
+        max(0, gold),
+        "sword" in text,
+        "shield" in text,
+        "potion" in text or "heal" in text,
+    )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

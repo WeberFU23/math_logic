@@ -15,15 +15,21 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from nesylink.core.constants import ACTION_LABELS
 from nesylink.env import make_env
-from rule_based_submission.agent import make_policy
+from utils.evaluate_policy import load_policy
 
 
 DEFAULT_TASK = "mathematical_logic/task_4"
 DEFAULT_OUT = PROJECT_ROOT / "runs" / "policy_replay.gif"
+DEFAULT_POLICY = "rule_based_submission/agent.py"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize the rule-based submission policy.")
+    parser.add_argument(
+        "--policy",
+        default=DEFAULT_POLICY,
+        help="Policy module or .py file, optionally with :attribute.",
+    )
     parser.add_argument("--task", default=DEFAULT_TASK, help="Task id to run.")
     parser.add_argument("--seed", type=int, default=0, help="Environment seed.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional episode step cap.")
@@ -56,7 +62,13 @@ def main() -> None:
 
 
 def run_episode(args: argparse.Namespace) -> tuple[list[Image.Image], dict[str, Any]]:
-    policy = make_policy(debug=args.debug)
+    policy = load_policy(args.policy)
+    if args.debug:
+        if hasattr(policy, "_debug"):
+            policy._debug = True
+        high_level_policy = getattr(policy, "high_level_policy", None)
+        if high_level_policy is not None and hasattr(high_level_policy, "_debug"):
+            high_level_policy._debug = True
     policy.reset(seed=args.seed, task_id=args.task)
     env = make_env(
         task_id=args.task,

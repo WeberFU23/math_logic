@@ -53,6 +53,7 @@ class Goal:
 @dataclass
 class SymbolicState:
     player: Position
+    player_position_px: tuple[float, float] | None = None
     room: RoomCoord = (0, 0)
     walls: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
@@ -64,6 +65,9 @@ class SymbolicState:
     bridges: set[Position] = field(default_factory=set)
     gaps: set[Position] = field(default_factory=set)
     npcs: set[Position] = field(default_factory=set)
+    # Optional visual semantics retained by the template-based perception
+    # path. The legacy color detector leaves this empty.
+    exit_labels: dict[Position, str] = field(default_factory=dict)
     keys: int = 0
     health: int | None = None
     has_sword: bool = True
@@ -78,6 +82,7 @@ class RoomSnapshot:
     monsters: set[Position] = field(default_factory=set)
     switches: set[Position] = field(default_factory=set)
     buttons: set[Position] = field(default_factory=set)
+    locked_exits: set[Position] = field(default_factory=set)
 
 
 @dataclass
@@ -86,6 +91,7 @@ class AgentMemory:
     room: RoomCoord = (0, 0)
     last_goal: Goal | None = None
     opened_chests: set[GlobalPosition] = field(default_factory=set)
+    killed_monsters: set[GlobalPosition] = field(default_factory=set)
     activated_switches: set[GlobalPosition] = field(default_factory=set)
     used_exits: set[GlobalPosition] = field(default_factory=set)
     room_memory: dict[RoomCoord, RoomSnapshot] = field(default_factory=dict)
@@ -99,6 +105,7 @@ class AgentMemory:
     has_sword: bool = True
     has_shield: bool = True
     last_action: int = ACTION_NOOP
+    facing_action: int = ACTION_DOWN
     step_index: int = 0
     room_steps: int = 0
     switch_cooldown: int = 0
@@ -113,6 +120,7 @@ class AgentMemory:
         self.previous_room = (0, 0)
         self.last_goal = None
         self.opened_chests.clear()
+        self.killed_monsters.clear()
         self.activated_switches.clear()
         self.used_exits.clear()
         self.room_memory.clear()
@@ -125,6 +133,7 @@ class AgentMemory:
         self.has_sword = task_id != "mathematical_logic/task_4"
         self.has_shield = True
         self.last_action = ACTION_NOOP
+        self.facing_action = ACTION_DOWN
         self.step_index = 0
         self.room_steps = 0
         self.switch_cooldown = 0
@@ -146,11 +155,20 @@ class AgentMemory:
     def update(self, state: SymbolicState) -> None:
         self.observe_room_transition(state.player)
         state.room = self.room
-        newly_opened: set[Position] = set()
+        newly_opened = self.previous_chests - state.chests
+        self.opened_chests.update(globalize_all(self.previous_room, newly_opened))
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
             if self.last_goal.kind == GoalKind.OPEN_CHEST and manhattan(state.player, self.last_goal.target) <= 1:
                 self.opened_chests.add(globalize(self.room, self.last_goal.target))
                 newly_opened.add(self.last_goal.target)
+            elif (
+                self.last_goal.kind == GoalKind.ATTACK_MONSTER
+                and len(state.monsters) < len(self.previous_monsters)
+            ):
+                self.killed_monsters.add(globalize(self.room, self.last_goal.target))
+                if self.room in self.room_memory:
+                    self.room_memory[self.room].monsters.discard(self.last_goal.target)
+                state.monsters.discard(self.last_goal.target)
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
                 self.activated_switches.add(globalize(self.room, self.last_goal.target))
                 state.switches.discard(self.last_goal.target)
@@ -179,6 +197,11 @@ class AgentMemory:
         room.monsters = set(state.monsters)
         room.switches.update(state.switches)
         room.buttons.update(state.buttons)
+        room.locked_exits = {
+            pos
+            for pos, label in state.exit_labels.items()
+            if "locked" in label and "open" not in label
+        }
         self.previous_room = self.room
         self.previous_chests = set(state.chests)
         self.previous_monsters = set(state.monsters)
@@ -237,11 +260,5 @@ def action_from_step(current: Position, nxt: Position) -> int:
     if (dx, dy) == (1, 0):
         return ACTION_RIGHT
     return ACTION_NOOP
-
-
-
-
-
-
 
 
