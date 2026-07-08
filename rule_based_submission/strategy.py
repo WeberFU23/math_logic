@@ -107,33 +107,33 @@ class RuleBasedPolicy(HighLevelPolicy):
             self._log(f"4.MONSTER -> {g.target}")
             return g
 
-        # -- 5. unused NORMAL exits -----------------------------------------
-        if reachable_normal_new:
-            g = self._best_exit_goal(state, memory, reachable_normal_new)
-            self._log(f"5.EXIT_NEW_N -> {g.target}")
-            return g
-
-        # -- 6. CONDITIONAL door — press buttons first, then go through ------
+        # -- 5. CONDITIONAL door: press buttons first, then go through --------
         if has_cond_door:
             if reachable_buttons and not cond_prereqs_met:
                 g = self._nearest_goal(state, reachable_buttons)
-                self._log(f"6.BUTTON_FOR_COND -> {g.target}")
+                self._log(f"5.BUTTON_FOR_COND -> {g.target}")
                 return g
-            # buttons done but monsters remain — redirect to monsters
+            # buttons done but monsters remain: redirect to monsters
             if not cond_prereqs_met and live_monsters and state.has_sword and self._safe_to_fight(state):
                 if reachable_monsters:
                     g = self._nearest_goal(state, reachable_monsters)
-                    self._log(f"6.MON_FOR_COND -> {g.target}")
+                    self._log(f"5.MON_FOR_COND -> {g.target}")
                     return g
             if cond_prereqs_met and reachable_cond_new:
                 g = self._best_exit_goal(state, memory, reachable_cond_new)
-                self._log(f"6.EXIT_NEW_C -> {g.target}")
+                self._log(f"5.EXIT_NEW_C -> {g.target}")
                 return g
 
-        # -- 7. unused LOCKED exits (only when carrying a key) ---------------
+        # -- 6. unused LOCKED exits (only when carrying a key) ---------------
         if have_key and reachable_locked_new:
             g = self._best_exit_goal(state, memory, reachable_locked_new)
-            self._log(f"7.EXIT_NEW_L -> {g.target}")
+            self._log(f"6.EXIT_NEW_L -> {g.target}")
+            return g
+
+        # -- 7. unused NORMAL exits -----------------------------------------
+        if reachable_normal_new:
+            g = self._best_exit_goal(state, memory, reachable_normal_new)
+            self._log(f"7.EXIT_NEW_N -> {g.target}")
             return g
 
         # -- 8. switches (not buttons) --------------------------------------
