@@ -29,7 +29,12 @@ def is_walkable(pos: Position, state: SymbolicState, *, allow_goal: bool = False
 def goal_tiles(goal: Goal, state: SymbolicState) -> set[Position]:
     if goal.target is None:
         return set()
-    if goal.kind in {GoalKind.OPEN_CHEST, GoalKind.ATTACK_MONSTER, GoalKind.ACTIVATE_SWITCH}:
+    if goal.kind in {GoalKind.OPEN_CHEST, GoalKind.ATTACK_MONSTER}:
+        return {pos for pos in neighbors(goal.target) if is_walkable(pos, state)}
+    if goal.kind == GoalKind.ACTIVATE_SWITCH:
+        # button: step onto it; switch: stand adjacent and press A
+        if goal.target in state.buttons:
+            return {goal.target}
         return {pos for pos in neighbors(goal.target) if is_walkable(pos, state)}
     if goal.kind == GoalKind.GO_TO_EXIT:
         return {goal.target}

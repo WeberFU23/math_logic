@@ -56,6 +56,8 @@ class Policy:
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
                 self._log(f"QUEUE INTERRUPT reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
+                if urgent_action == ACTION_A:
+                    self._force_fight_ticks = 240
                 self._queued_ticks -= 1
                 self.memory.last_action = urgent_action
                 return urgent_action
@@ -69,6 +71,8 @@ class Policy:
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
             self._log(f"PLAN  reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
+            if urgent_action == ACTION_A:
+                self._force_fight_ticks = 240
             self.memory.last_action = urgent_action
             return urgent_action
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
@@ -91,6 +95,9 @@ class Policy:
         self.memory.last_action = action
         if action in MOVE_DELTAS:
             self._facing = action
+        if action == ACTION_A and state.monsters:
+            if any(manhattan(state.player, m) <= 2 for m in state.monsters):
+                self._force_fight_ticks = 240
         self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
 
@@ -122,12 +129,6 @@ class Policy:
             self._blocked_ticks -= 1
             if self._blocked_ticks == 0:
                 self._blocked_action = None
-
-        if any(
-            isinstance(record, dict) and record.get("name") in {"shield_block", "agent_damaged", "monster_damaged"}
-            for record in records
-        ):
-            self._force_fight_ticks = 240
 
         self._observe_exit_events(records)
 
@@ -174,9 +175,8 @@ class Policy:
         if self._force_fight_ticks <= 0:
             return None
         self._force_fight_ticks -= 1
-        if not state.has_sword or not state.monsters:
-            return None
-        if state.health is not None and state.health <= 1:
+        if not state.has_sword or not state.monsters or (state.health is not None and state.health <= 1):
+            self._force_fight_ticks = 0
             return None
         target = min(state.monsters, key=lambda monster: self._monster_rank(state, monster))
         self._log(f"FORCED_COMBAT -> {target}  (ticks_left={self._force_fight_ticks})")
@@ -271,7 +271,7 @@ class Policy:
 
         near_threats = [
             monster for monster in state.monsters
-            if self._euclidean(state.player, monster) < 1.5
+            if manhattan(state.player, monster) <= 2
             and not self._wall_between(state, state.player, monster)
         ]
         if not near_threats:

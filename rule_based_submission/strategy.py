@@ -76,7 +76,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         # -- 1. sticky goal -------------------------------------------------
         sticky = self._continue_last_goal(
             state, memory, unopened_chests, live_monsters, mechanisms,
-            door_exits, door_locked, door_conditional,
+            door_exits, door_locked, door_conditional, state.buttons,
         )
         if sticky is not None:
             self._log(f"1.STICKY  -> {sticky.kind.value}:{sticky.target}")
@@ -119,6 +119,12 @@ class RuleBasedPolicy(HighLevelPolicy):
                 g = self._nearest_goal(state, reachable_buttons)
                 self._log(f"6.BUTTON_FOR_COND -> {g.target}")
                 return g
+            # buttons done but monsters remain — redirect to monsters
+            if not cond_prereqs_met and live_monsters and state.has_sword and self._safe_to_fight(state):
+                if reachable_monsters:
+                    g = self._nearest_goal(state, reachable_monsters)
+                    self._log(f"6.MON_FOR_COND -> {g.target}")
+                    return g
             if cond_prereqs_met and reachable_cond_new:
                 g = self._best_exit_goal(state, memory, reachable_cond_new)
                 self._log(f"6.EXIT_NEW_C -> {g.target}")
@@ -148,6 +154,12 @@ class RuleBasedPolicy(HighLevelPolicy):
                 g = self._nearest_goal(state, reachable_buttons)
                 self._log(f"10.BUTTON_FOR_COND -> {g.target}")
                 return g
+            # buttons done but monsters remain — redirect to monsters
+            if not cond_prereqs_met and live_monsters and state.has_sword and self._safe_to_fight(state):
+                if reachable_monsters:
+                    g = self._nearest_goal(state, reachable_monsters)
+                    self._log(f"10.MON_FOR_COND -> {g.target}")
+                    return g
             if cond_prereqs_met and reachable_cond_all:
                 g = self._best_exit_goal(state, memory, reachable_cond_all, allow_used=True)
                 self._log(f"10.EXIT_USED_C -> {g.target}")
@@ -183,6 +195,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         door_exits: set[Position],
         door_locked: set[Position],
         door_conditional: set[Position],
+        all_buttons: set[Position],
     ) -> Goal | None:
         goal = memory.last_goal
         if goal is None or goal.target is None:
@@ -195,10 +208,17 @@ class RuleBasedPolicy(HighLevelPolicy):
         if goal.kind == GoalKind.ATTACK_MONSTER and target in live_monsters and self._safe_to_fight(state):
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
 
-        if goal.kind == GoalKind.ACTIVATE_SWITCH and target in mechanisms:
-            if self._has_unused_exits(state, memory, door_exits):
-                return None
-            return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
+        if goal.kind == GoalKind.ACTIVATE_SWITCH:
+            # button target
+            if target in all_buttons:
+                if state.player == target:
+                    return None  # already on it, triggered
+                return goal if is_reachable(state, goal) else None
+            # switch target
+            if target in mechanisms:
+                if self._has_unused_exits(state, memory, door_exits):
+                    return None
+                return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
 
         if goal.kind == GoalKind.GO_TO_EXIT and target in door_exits:
             # chests always take priority

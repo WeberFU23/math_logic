@@ -158,6 +158,9 @@ class AgentMemory:
                 state.switches.discard(self.last_goal.target)
                 state.buttons.discard(self.last_goal.target)
                 self.switch_cooldown = 40
+        # button: triggers automatically when stepped on
+        if state.player in state.buttons:
+            self.activated_switches.add(globalize(self.room, state.player))
         if (
             self.last_goal is not None
             and self.last_goal.kind == GoalKind.EXPLORE
