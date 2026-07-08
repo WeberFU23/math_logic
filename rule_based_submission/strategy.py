@@ -266,16 +266,20 @@ class RuleBasedPolicy(HighLevelPolicy):
         current = state.room
         target_room = min(target_rooms, key=lambda room: (self._room_distance(current, room), room))
 
-        def rank(goal: Goal) -> tuple[int, int, int, Position]:
+        def rank(goal: Goal) -> tuple[int, int, int, int, Position]:
             target = goal.target or state.player
             neighbor = self._neighbor_room(current, target)
             if neighbor is None:
-                return (99, manhattan(state.player, target), 99, target)
+                return (99, 99, manhattan(state.player, target), 99, target)
             before = self._room_distance(current, target_room)
             after = self._room_distance(neighbor, target_room)
             improves = 0 if after < before else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
-            return (improves, after, used, target)
+            # A doorway is rendered as two adjacent tiles.  Both lead to the
+            # same neighbour, so choose the half nearest the current player
+            # instead of falling back to lexicographic coordinates (which made
+            # the agent climb back to row 3 before leaving from row 4).
+            return (improves, after, used, manhattan(state.player, target), target)
 
         return min(reachable_exits, key=rank)
 
@@ -298,7 +302,14 @@ class RuleBasedPolicy(HighLevelPolicy):
             # that semantic fact in memory so returning from a remote key room
             # is directed toward progress instead of an arbitrary used exit.
             unlockable = state.keys > 0 and bool(snapshot.locked_exits)
-            if unopened or mechanisms or unlockable or (state.has_sword and unkilled):
+            # An already-used mechanism may be reusable (for example, a
+            # rotating bridge).  Remember it as possible progress, but do not
+            # make every observed one-shot button a permanent attractor.
+            reusable_mechanism = any(
+                globalize(room, pos) in memory.activated_switches
+                for pos in (snapshot.switches | snapshot.buttons)
+            )
+            if unopened or mechanisms or unlockable or (state.has_sword and unkilled) or reusable_mechanism:
                 rooms.add(room)
         return rooms
 
@@ -349,8 +360,6 @@ class RuleBasedPolicy(HighLevelPolicy):
 class RLHighLevelPolicy(HighLevelPolicy):
     def choose_goal(self, state: SymbolicState, memory: AgentMemory) -> Goal:
         raise NotImplementedError("Plug a trained RL goal selector in here.")
-
-
 
 
 

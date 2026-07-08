@@ -39,6 +39,7 @@ class GoalKind(str, Enum):
     ATTACK_MONSTER = "attack_monster"
     OPEN_CHEST = "open_chest"
     ACTIVATE_SWITCH = "activate_switch"
+    PRESS_BUTTON = "press_button"
     GO_TO_EXIT = "go_to_exit"
     EXPLORE = "explore"
     WAIT = "wait"
@@ -93,6 +94,7 @@ class AgentMemory:
     opened_chests: set[GlobalPosition] = field(default_factory=set)
     killed_monsters: set[GlobalPosition] = field(default_factory=set)
     activated_switches: set[GlobalPosition] = field(default_factory=set)
+    visit_activated_switches: set[GlobalPosition] = field(default_factory=set)
     used_exits: set[GlobalPosition] = field(default_factory=set)
     room_memory: dict[RoomCoord, RoomSnapshot] = field(default_factory=dict)
     previous_chests: set[Position] = field(default_factory=set)
@@ -122,6 +124,7 @@ class AgentMemory:
         self.opened_chests.clear()
         self.killed_monsters.clear()
         self.activated_switches.clear()
+        self.visit_activated_switches.clear()
         self.used_exits.clear()
         self.room_memory.clear()
         self.previous_chests.clear()
@@ -170,10 +173,22 @@ class AgentMemory:
                     self.room_memory[self.room].monsters.discard(self.last_goal.target)
                 state.monsters.discard(self.last_goal.target)
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
-                self.activated_switches.add(globalize(self.room, self.last_goal.target))
+                mechanism = globalize(self.room, self.last_goal.target)
+                self.activated_switches.add(mechanism)
+                self.visit_activated_switches.add(mechanism)
                 state.switches.discard(self.last_goal.target)
                 state.buttons.discard(self.last_goal.target)
                 self.switch_cooldown = 40
+        if (
+            self.last_goal is not None
+            and self.last_goal.kind == GoalKind.PRESS_BUTTON
+            and self.last_goal.target is not None
+            and state.player == self.last_goal.target
+        ):
+            mechanism = globalize(self.room, self.last_goal.target)
+            self.activated_switches.add(mechanism)
+            self.visit_activated_switches.add(mechanism)
+            state.buttons.discard(self.last_goal.target)
         if newly_opened and self.previous_keys <= 0:
             self.previous_keys = max(self.previous_keys, state.keys)
         if state.keys > self.previous_keys:
@@ -214,6 +229,7 @@ class AgentMemory:
         self.last_goal = None
         self.room_steps = 0
         self.switch_cooldown = 0
+        self.visit_activated_switches.clear()
         self.previous_chests.clear()
         self.previous_monsters.clear()
         self.previous_room = self.room
@@ -260,5 +276,3 @@ def action_from_step(current: Position, nxt: Position) -> int:
     if (dx, dy) == (1, 0):
         return ACTION_RIGHT
     return ACTION_NOOP
-
-

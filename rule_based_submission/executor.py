@@ -31,7 +31,7 @@ def action_for_goal(state: SymbolicState, goal: Goal) -> int:
         move = next_move_toward(state, goal)
         return ACTION_NOOP if move is None else move
 
-    if goal.kind == GoalKind.EXPLORE:
+    if goal.kind in {GoalKind.EXPLORE, GoalKind.PRESS_BUTTON}:
         move = next_move_toward(state, goal)
         return ACTION_NOOP if move is None else move
 

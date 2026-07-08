@@ -20,6 +20,10 @@ def is_walkable(pos: Position, state: SymbolicState, *, allow_goal: bool = False
     blockers = set(state.walls) | set(state.gaps) | set(state.traps)
     blockers |= set(state.chests)
     blockers |= set(state.monsters)
+    # NPCs occupy physical tiles just like chests and monsters.  Omitting them
+    # makes BFS repeatedly choose a geometrically short but impossible route
+    # through the character (task 5 exposes this beside the south-gate button).
+    blockers |= set(state.npcs)
     blockers -= set(state.bridges)
     if allow_goal:
         blockers -= set(state.exits)
@@ -31,6 +35,8 @@ def goal_tiles(goal: Goal, state: SymbolicState) -> set[Position]:
         return set()
     if goal.kind in {GoalKind.OPEN_CHEST, GoalKind.ATTACK_MONSTER, GoalKind.ACTIVATE_SWITCH}:
         return {pos for pos in neighbors(goal.target) if is_walkable(pos, state)}
+    if goal.kind == GoalKind.PRESS_BUTTON:
+        return {goal.target}
     if goal.kind == GoalKind.GO_TO_EXIT:
         return {goal.target}
     if goal.kind == GoalKind.EXPLORE:

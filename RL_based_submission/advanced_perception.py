@@ -9,10 +9,12 @@ from RL_based_submission.vision_extractor import (
     ABYSS,
     BRIDGE,
     BUTTON,
+    BUTTON_PRESSED,
     CHEST,
     GAP,
     NPC,
     SWITCH,
+    SWITCH_PRESSED,
     TRAP,
     WALL,
     SymbolicFrame,
@@ -83,9 +85,12 @@ class AdvancedPerceptor:
             monsters=monsters,
             exits=exits,
             traps=set(positions.get(TRAP, set())) | set(positions.get(ABYSS, set())),
-            # Pressed variants are intentionally not actionable again.
-            buttons=set(positions.get(BUTTON, set())),
-            switches=set(positions.get(SWITCH, set())),
+            # Include pressed variants — some mechanisms are reusable
+            # (e.g. the rotating bridge switch in task 4 needs multiple
+            # activations to cycle through its states).  The tile under
+            # the player is excluded to avoid sprite-occlusion artefacts.
+            buttons=(set(positions.get(BUTTON, set())) | set(positions.get(BUTTON_PRESSED, set()))) - {player},
+            switches=(set(positions.get(SWITCH, set())) | set(positions.get(SWITCH_PRESSED, set()))) - {player},
             bridges=set(positions.get(BRIDGE, set())),
             gaps=set(positions.get(GAP, set())),
             npcs=set(positions.get(NPC, set())),

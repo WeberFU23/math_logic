@@ -41,9 +41,12 @@ EVENT_BONUSES = {
     "key_collected": 4.0,
     "item_collected": 4.0,
     "monster_killed": 4.0,
-    "switch_activated": 2.0,
-    "button_pressed": 1.5,
-    "bridge_rotated": 2.0,
+    # Mechanisms are intermediate topology changes, not repeatable progress.
+    # Their official reward remains (scaled by base_reward_scale), while the
+    # valuable consequences they unlock are rewarded below.
+    "switch_activated": 0.0,
+    "button_pressed": 0.0,
+    "bridge_rotated": 0.0,
     # Crossing an already-known doorway is not progress.  Rewarding every
     # room_changed/exit_reached event lets PPO farm reward by walking back and
     # forth through the same door.
@@ -154,22 +157,35 @@ class HighLevelOptionEnv(gym.Env):
         obs = self.last_obs
         info = self.last_info
         primitive_steps = 0
+        room_changed_via_game = False
         for _ in range(repeats):
             obs, reward, terminated, truncated, info = self.env.step(primitive_action)
             primitive_steps += 1
             base_reward += float(reward)
             events.update(_event_names(info))
+            if info.get("game", {}).get("room_changed", False):
+                room_changed_via_game = True
             if terminated or truncated:
                 break
 
-        # A possible room change must start with clean static visual memory.
-        if transition_possible:
+        # A room change requires clean static visual memory.  Use both the
+        # pre-move heuristic and the ground-truth game flag so that vision is
+        # reset even when the agent was not at the exact door edge at the
+        # start of the macro action (e.g. it walked 2 tiles then crossed).
+        if transition_possible or room_changed_via_game:
             self.perceptor.reset_room_vision()
         if primitive_action in MOVE_DELTAS:
             self.memory.facing_action = primitive_action
         next_state = self.perceptor.perceive(obs, info)
-        room_changed = transition_possible and self._transition_succeeded(
-            start_state.player, next_state.player
+        # Use game info as ground truth; fall back to visual heuristic only when
+        # the game flag was never set (e.g. the transition completed before any
+        # step in *this* macro action, or the info dict was unavailable).
+        room_changed = (
+            room_changed_via_game
+            or (
+                transition_possible
+                and self._transition_succeeded(start_state.player, next_state.player)
+            )
         )
         discovered_exit = False
         if room_changed:
@@ -241,8 +257,10 @@ class HighLevelOptionEnv(gym.Env):
     ) -> float:
         reward = self.base_reward_scale * base_reward - 0.02
         if room_changed and not discovered_exit:
-            # Remove any positive official transition reward from a known door,
-            # then make the loop strictly worse than doing useful work.
+            # Remove the positive official transition reward and apply a small
+            # cost.  Known-door crossings must not be profitable, but they also
+            # cannot be punished heavily: tasks 3/4 require returning through
+            # previously used doors after collecting a key or item.
             reward -= self.base_reward_scale * base_reward + 0.25
         if invalid_option:
             reward -= 0.5
@@ -280,13 +298,13 @@ class HighLevelOptionEnv(gym.Env):
     ) -> bool:
         col, row = start
         if row <= 1:
-            return end[1] >= 6
+            return end[1] >= 5
         if row >= 6:
-            return end[1] <= 1
+            return end[1] <= 2
         if col <= 1:
-            return end[0] >= 8
+            return end[0] >= 7
         if col >= 8:
-            return end[0] <= 1
+            return end[0] <= 2
         return False
 
     def _transition_possible(self, start: tuple[int, int], action: int) -> bool:

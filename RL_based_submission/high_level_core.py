@@ -67,6 +67,13 @@ def oriented_action_for_goal(
             return desired_facing, True
         return ACTION_A, False
     action = action_for_goal(state, goal)
+    # When already standing on an exit tile the only valid move is to push
+    # through the doorway.  Alignment at the exit boundary risks walking
+    # into the adjacent wall (the pixel-level offset check in
+    # _alignment_action can suggest DOWN/UP even though the neighbouring
+    # tile in that direction is solid).
+    if goal.kind == GoalKind.GO_TO_EXIT and state.player == goal.target:
+        return action, False
     alignment = _alignment_action(state, action)
     if alignment is not None:
         return alignment, True
@@ -95,10 +102,45 @@ class GoalResolver:
         self._rule_helpers = RuleBasedPolicy()
 
     def action_mask(self, state: SymbolicState, memory: AgentMemory) -> np.ndarray:
-        return np.asarray(
+        mask = np.asarray(
             [self.resolve(action, state, memory) is not None for action in HighLevelAction],
             dtype=bool,
         )
+
+        new_exit = bool(mask[int(HighLevelAction.TAKE_NEW_EXIT)])
+        local_progress = bool(
+            mask[int(HighLevelAction.OPEN_CHEST)]
+            or mask[int(HighLevelAction.ATTACK_MONSTER)]
+            or mask[int(HighLevelAction.ACTIVATE_MECHANISM)]
+        )
+
+        # A reachable frontier dominates backtracking.  Keeping both choices
+        # enabled allowed task 4 to bounce between west and center after the
+        # first bridge rotation instead of taking the newly reachable east/south
+        # branch.
+        if new_exit:
+            mask[int(HighLevelAction.RETURN_OR_REVISIT)] = False
+        # If a room has concrete work but no frontier, do that work before
+        # retreating through an old doorway (key-room return remains available
+        # because its opened chest is filtered out by resolve()).
+        elif local_progress:
+            mask[int(HighLevelAction.RETURN_OR_REVISIT)] = False
+
+        # EXPLORE and WAIT are recovery actions, not alternatives to known
+        # progress.  Leaving them enabled beside a chest, monster, mechanism,
+        # frontier exit, or required return lets PPO learn a locally cheap
+        # deadlock (most visibly: WAIT forever after collecting task-4's key).
+        if bool(mask[: int(HighLevelAction.EXPLORE_ROOM)].any()):
+            mask[int(HighLevelAction.EXPLORE_ROOM)] = False
+            mask[int(HighLevelAction.WAIT)] = False
+        elif mask[int(HighLevelAction.EXPLORE_ROOM)]:
+            mask[int(HighLevelAction.WAIT)] = False
+
+        # WAIT is therefore enabled only when no concrete or exploratory goal
+        # can be resolved.  Keep this final fallback so the mask is never empty.
+        if not bool(mask.any()):
+            mask[int(HighLevelAction.WAIT)] = True
+        return mask
 
     def resolve(
         self,
@@ -124,14 +166,25 @@ class GoalResolver:
             return self._nearest_reachable(state, GoalKind.ATTACK_MONSTER, positions)
 
         if option == HighLevelAction.ACTIVATE_MECHANISM:
-            all_positions = state.buttons | state.switches
-            unused = {
-                pos for pos in all_positions
-                if globalize(state.room, pos) not in memory.activated_switches
+            available_buttons = {
+                pos for pos in state.buttons
+                if globalize(state.room, pos) not in memory.visit_activated_switches
             }
-            # Rotating bridges may require using the same mechanism more than
-            # once. Prefer a new mechanism, but keep revisits representable.
-            positions = unused or all_positions
+            button_goal = self._nearest_reachable(
+                state, GoalKind.PRESS_BUTTON, available_buttons
+            )
+            if button_goal is not None:
+                return button_goal
+
+            all_positions = state.switches
+            # A rotating mechanism may be used again after leaving and coming
+            # back, but never repeatedly during the same room visit.  Without
+            # this guard PPO can alternate ACTIVATE/WAIT forever and farm the
+            # bridge-rotation reward without exploring.
+            positions = {
+                pos for pos in all_positions
+                if globalize(state.room, pos) not in memory.visit_activated_switches
+            }
             return self._nearest_reachable(state, GoalKind.ACTIVATE_SWITCH, positions)
 
         exits = {
@@ -189,14 +242,14 @@ class GoalResolver:
         forward = self._rule_helpers._avoid_entry_side(state, memory, candidates)
         candidates = forward or candidates
 
-        def rank(goal: Goal) -> tuple[int, int, int, int, tuple[int, int]]:
+        def rank(goal: Goal) -> tuple[int, int, int, int, int, tuple[int, int]]:
             target = goal.target or state.player
             neighbor = self._rule_helpers._neighbor_room(state.room, target)
             unvisited = 0 if neighbor is not None and neighbor not in memory.room_memory else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
             key_bonus = 0 if state.keys > 0 and target[0] == 9 else 1
             entry = 1 if self._rule_helpers._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
-            return (used, unvisited, entry, key_bonus + manhattan(state.player, target), target)
+            return (used, unvisited, entry, key_bonus, manhattan(state.player, target), target)
 
         return min(candidates, key=rank)
 

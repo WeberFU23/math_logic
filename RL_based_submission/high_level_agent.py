@@ -136,13 +136,13 @@ def _load_model(task_id: str | None):
 def _transition_succeeded(start: tuple[int, int], end: tuple[int, int]) -> bool:
     col, row = start
     if row <= 1:
-        return end[1] >= 6
+        return end[1] >= 5
     if row >= 6:
-        return end[1] <= 1
+        return end[1] <= 2
     if col <= 1:
-        return end[0] >= 8
+        return end[0] >= 7
     if col >= 8:
-        return end[0] <= 1
+        return end[0] <= 2
     return False
 
 
