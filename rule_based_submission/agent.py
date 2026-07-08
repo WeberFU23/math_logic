@@ -81,7 +81,7 @@ class Policy:
         action = shield(raw_action, state)
         if action in MOVE_DELTAS:
             candidate = next_position(state.player, action)
-            leaving_through_exit = self._is_door_exit(state.player) and state.player in state.exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
+            leaving_through_exit = self._is_door_exit(state.player) and state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
             self._queued_action = action
             self._queued_ticks = 23 if leaving_through_exit else (1 if unstick_nudge else self._move_queue_ticks(state))
         else:
@@ -91,7 +91,7 @@ class Policy:
         self.memory.last_action = action
         if action in MOVE_DELTAS:
             self._facing = action
-        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.exits}  room={state.room}  player={state.player}")
+        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
 
 
@@ -130,18 +130,6 @@ class Policy:
             self._force_fight_ticks = 240
 
         self._observe_exit_events(records)
-
-        door_events = sum(
-            1
-            for record in records
-            if isinstance(record, dict) and record.get("name") == "door_opened"
-        )
-        if door_events <= self.memory.handled_door_events:
-            return
-        spent = door_events - self.memory.handled_door_events
-        self.memory.spent_keys += spent
-        self.memory.previous_keys = max(0, self.memory.previous_keys - spent)
-        self.memory.handled_door_events = door_events
 
     def _observe_exit_events(self, records: list[dict[str, Any]]) -> None:
         for record in records:
@@ -191,6 +179,7 @@ class Policy:
         if state.health is not None and state.health <= 1:
             return None
         target = min(state.monsters, key=lambda monster: self._monster_rank(state, monster))
+        self._log(f"FORCED_COMBAT -> {target}  (ticks_left={self._force_fight_ticks})")
         return Goal(GoalKind.ATTACK_MONSTER, target)
 
     def _unstick_action(self, state: SymbolicState, goal: Goal, blocked_action: int) -> int:
@@ -280,28 +269,32 @@ class Policy:
         if not state.monsters:
             return None
 
-        near_threats = [monster for monster in state.monsters if manhattan(state.player, monster) <= 2]
+        near_threats = [
+            monster for monster in state.monsters
+            if self._euclidean(state.player, monster) < 1.5
+            and not self._wall_between(state, state.player, monster)
+        ]
         if not near_threats:
             return None
 
         target = min(near_threats, key=lambda monster: self._monster_rank(state, monster))
-        dist = manhattan(state.player, target)
+        m_dist = manhattan(state.player, target)
 
-        # ── adjacent (dist == 1) ──────────────────────────────────────
-        if dist == 1:
-            # facing the monster �?attack
+        # -- cardinal adjacent (manhattan == 1) -------------------------
+        if m_dist == 1:
+            # facing the monster �?attack
             if state.has_sword and self._is_facing(state.player, target):
                 return ACTION_A
-            # not facing �?step back to create distance, then re-approach
+            # not facing �?step back to create distance, then re-approach
             retreat = self._step_away(state, target)
             if retreat is not None:
                 return retreat
-            # can't step back �?shield as last resort to push monster away
+            # can't step back �?shield as last resort to push monster away
             if state.has_shield:
                 return ACTION_B
             return None
 
-        # ── one tile gap (dist == 2) ──────────────────────────────────
+        # -- diagonal adjacent (manhattan == 2, euclidean < 1.5) --------
         if state.has_sword:
             approach = self._step_toward_safe(state, target)
             if approach is not None:
@@ -348,6 +341,34 @@ class Policy:
                 best_dist = d
                 best_action = action
         return best_action
+
+    @staticmethod
+    def _euclidean(a: Position, b: Position) -> float:
+        return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+    def _wall_between(self, state: SymbolicState, player: Position, monster: Position) -> bool:
+        """True when a wall blocks the direct path to the monster."""
+        px, py = player
+        mx, my = monster
+        dist = manhattan(player, monster)
+        if dist <= 1:
+            return False  # adjacent — no tile can be between
+        # same row
+        if py == my:
+            step = 1 if mx > px else -1
+            for x in range(px + step, mx, step):
+                if (x, py) in state.walls:
+                    return True
+        # same column
+        elif px == mx:
+            step = 1 if my > py else -1
+            for y in range(py + step, my, step):
+                if (px, y) in state.walls:
+                    return True
+        # diagonal — both corner tiles must be walls to block
+        else:
+            return (mx, py) in state.walls and (px, my) in state.walls
+        return False
 
     def _monster_rank(self, state: SymbolicState, monster: Position) -> tuple[int, int, Position]:
         facing_penalty = 0 if self._is_facing(state.player, monster) else 1

@@ -17,7 +17,7 @@ def shield(action: int, state: SymbolicState) -> int:
     if action not in MOVE_DELTAS:
         return ACTION_NOOP
     candidate = next_position(state.player, action)
-    if state.player in state.exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8):
+    if state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8):
         return action
     if not is_walkable(candidate, state, allow_goal=True):
         return ACTION_NOOP

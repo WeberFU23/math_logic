@@ -22,7 +22,7 @@ def is_walkable(pos: Position, state: SymbolicState, *, allow_goal: bool = False
     blockers |= set(state.monsters)
     blockers -= set(state.bridges)
     if allow_goal:
-        blockers -= set(state.exits)
+        blockers -= state.all_exits
     return pos not in blockers
 
 

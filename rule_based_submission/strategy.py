@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
@@ -19,10 +19,9 @@ class HighLevelPolicy(ABC):
 class RuleBasedPolicy(HighLevelPolicy):
     """Generic progress-first symbolic controller.
 
-    The policy deliberately avoids task ids and fixed coordinates. It ranks the
-    currently perceived symbolic affordances by the kind of progress they can
-    unlock: visible rewards/resources, local mechanisms, necessary combat, then
-    exits and fallback exploration.
+    The priority chain ranks the currently perceived symbolic affordances:
+    chests > buttons (for conditional doors) > exits (normal > conditional > locked)
+    > switches > explore > wait.
     """
 
     def __init__(self, *, debug: bool = False) -> None:
@@ -32,9 +31,19 @@ class RuleBasedPolicy(HighLevelPolicy):
         if self._debug:
             print(f"  [strategy] {msg}")
 
+    # ------------------------------------------------------------------
+    # main priority chain
+    # ------------------------------------------------------------------
+
     def choose_goal(self, state: SymbolicState, memory: AgentMemory) -> Goal:
         door_exits = self._door_exits(state)
-        mechanisms = self._mechanisms(state)
+        door_normal = self._door_normal(state)
+        door_locked = self._door_locked(state)
+        door_conditional = self._door_conditional(state)
+        mechanisms = self._mechanisms(state)          # switches only
+        has_cond_door = bool(door_conditional)
+        have_key = state.keys > 0
+
         unopened_chests = {
             pos for pos in state.chests
             if globalize(state.room, pos) not in memory.opened_chests
@@ -44,73 +53,125 @@ class RuleBasedPolicy(HighLevelPolicy):
         reachable_chests = self._reachable_goals(state, GoalKind.OPEN_CHEST, unopened_chests)
         reachable_mechanisms = self._reachable_goals(state, GoalKind.ACTIVATE_SWITCH, mechanisms)
         reachable_monsters = self._reachable_goals(state, GoalKind.ATTACK_MONSTER, live_monsters)
-        reachable_new_exits = self._reachable_goals(
-            state,
-            GoalKind.GO_TO_EXIT,
-            {pos for pos in door_exits if globalize(state.room, pos) not in memory.used_exits},
-        )
-        reachable_all_exits = self._reachable_goals(state, GoalKind.GO_TO_EXIT, door_exits)
 
-        # 鈹€鈹€ 1. sticky goal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-        sticky_goal = self._continue_last_goal(
-            state, memory, unopened_chests, live_monsters, mechanisms, door_exits,
-        )
-        if sticky_goal is not None:
-            self._log(f"1.STICKY  鈫?{sticky_goal.kind.value}:{sticky_goal.target}")
-            return sticky_goal
+        # buttons only matter when a conditional door exists in this room
+        unpressed = {
+            pos for pos in state.buttons
+            if globalize(state.room, pos) not in memory.activated_switches
+        } if has_cond_door else set[Position]()
+        reachable_buttons = self._reachable_goals(state, GoalKind.ACTIVATE_SWITCH, unpressed)
 
-        # 鈹€鈹€ 2. adjacent actionable  鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-        adjacent = self._adjacent_goal(state, reachable_chests)
-        if adjacent is not None:
-            self._log(f"2.ADJ_CHEST 鈫?{adjacent.target}")
-            return adjacent
+        cond_prereqs_met = has_cond_door and not unpressed and not live_monsters
+
+        def _new(doors: set[Position]) -> set[Position]:
+            return {p for p in doors if globalize(state.room, p) not in memory.used_exits}
+
+        reachable_normal_new  = self._reachable_goals(state, GoalKind.GO_TO_EXIT, _new(door_normal))
+        reachable_locked_new  = self._reachable_goals(state, GoalKind.GO_TO_EXIT, _new(door_locked))
+        reachable_cond_new    = self._reachable_goals(state, GoalKind.GO_TO_EXIT, _new(door_conditional))
+        reachable_normal_all  = self._reachable_goals(state, GoalKind.GO_TO_EXIT, door_normal)
+        reachable_locked_all  = self._reachable_goals(state, GoalKind.GO_TO_EXIT, door_locked)
+        reachable_cond_all    = self._reachable_goals(state, GoalKind.GO_TO_EXIT, door_conditional)
+
+        # -- 1. sticky goal -------------------------------------------------
+        sticky = self._continue_last_goal(
+            state, memory, unopened_chests, live_monsters, mechanisms,
+            door_exits, door_locked, door_conditional,
+        )
+        if sticky is not None:
+            self._log(f"1.STICKY  -> {sticky.kind.value}:{sticky.target}")
+            return sticky
+
+        # -- 2. adjacent actionable -----------------------------------------
+        adj = self._adjacent_goal(state, reachable_chests)
+        if adj is not None:
+            self._log(f"2.ADJ_CHEST -> {adj.target}")
+            return adj
         if state.has_sword:
-            adjacent = self._adjacent_goal(state, reachable_monsters)
-            if adjacent is not None and self._safe_to_fight(state):
-                self._log(f"2.ADJ_MON 鈫?{adjacent.target}")
-                return adjacent
+            adj = self._adjacent_goal(state, reachable_monsters)
+            if adj is not None and self._safe_to_fight(state):
+                self._log(f"2.ADJ_MON -> {adj.target}")
+                return adj
 
-        # 鈹€鈹€ 3. reachable chests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+        # -- 3. reachable chests --------------------------------------------
         if reachable_chests:
-            goal = self._nearest_goal(state, reachable_chests)
-            self._log(f"3.CHEST 鈫?{goal.target}")
-            return goal
+            g = self._nearest_goal(state, reachable_chests)
+            self._log(f"3.CHEST -> {g.target}")
+            return g
 
-        # 4. required monsters: no value targets remain, only doors/walls/monsters.
+        # -- 4. monsters (must clear before exit) ---------------------------
         if reachable_monsters and self._must_clear_monsters_before_exit(
-            state, memory, unopened_chests, mechanisms, live_monsters,
+            state, memory, unopened_chests, door_exits, mechanisms,
         ):
-            goal = self._nearest_goal(state, reachable_monsters)
-            self._log(f"4.MONSTER_REQUIRED -> {goal.target}")
-            return goal
+            g = self._nearest_goal(state, reachable_monsters)
+            self._log(f"4.MONSTER -> {g.target}")
+            return g
 
-        # 5. unused exits for exploration
-        if reachable_new_exits:
-            goal = self._best_exit_goal(state, memory, reachable_new_exits)
-            self._log(f"5.EXIT_NEW -> {goal.target}  candidates={[g.target for g in reachable_new_exits]}")
-            return goal
+        # -- 5. unused NORMAL exits -----------------------------------------
+        if reachable_normal_new:
+            g = self._best_exit_goal(state, memory, reachable_normal_new)
+            self._log(f"5.EXIT_NEW_N -> {g.target}")
+            return g
 
-        # 6. mechanisms after exploration exits
-        mechanism_goal = self._mechanism_goal(state, memory, reachable_mechanisms)
-        if mechanism_goal is not None:
-            self._log(f"6.MECH -> {mechanism_goal.target}")
-            return mechanism_goal
+        # -- 6. CONDITIONAL door — press buttons first, then go through ------
+        if has_cond_door:
+            if reachable_buttons and not cond_prereqs_met:
+                g = self._nearest_goal(state, reachable_buttons)
+                self._log(f"6.BUTTON_FOR_COND -> {g.target}")
+                return g
+            if cond_prereqs_met and reachable_cond_new:
+                g = self._best_exit_goal(state, memory, reachable_cond_new)
+                self._log(f"6.EXIT_NEW_C -> {g.target}")
+                return g
 
-        # 7. used exits (fallback)
-        if reachable_all_exits:
-            goal = self._best_exit_goal(state, memory, reachable_all_exits, allow_used=True)
-            self._log(f"7.EXIT_USED -> {goal.target}")
-            return goal
+        # -- 7. unused LOCKED exits (only when carrying a key) ---------------
+        if have_key and reachable_locked_new:
+            g = self._best_exit_goal(state, memory, reachable_locked_new)
+            self._log(f"7.EXIT_NEW_L -> {g.target}")
+            return g
 
-        # 8. explore fallback
+        # -- 8. switches (not buttons) --------------------------------------
+        mg = self._mechanism_goal(state, memory, reachable_mechanisms)
+        if mg is not None:
+            self._log(f"8.SWITCH -> {mg.target}")
+            return mg
+
+        # -- 9. used NORMAL exits (fallback) --------------------------------
+        if reachable_normal_all:
+            g = self._best_exit_goal(state, memory, reachable_normal_all, allow_used=True)
+            self._log(f"9.EXIT_USED_N -> {g.target}")
+            return g
+
+        # -- 10. CONDITIONAL door (used) — press buttons first, then go -----
+        if has_cond_door:
+            if reachable_buttons and not cond_prereqs_met:
+                g = self._nearest_goal(state, reachable_buttons)
+                self._log(f"10.BUTTON_FOR_COND -> {g.target}")
+                return g
+            if cond_prereqs_met and reachable_cond_all:
+                g = self._best_exit_goal(state, memory, reachable_cond_all, allow_used=True)
+                self._log(f"10.EXIT_USED_C -> {g.target}")
+                return g
+
+        # -- 11. used LOCKED exits ------------------------------------------
+        if have_key and reachable_locked_all:
+            g = self._best_exit_goal(state, memory, reachable_locked_all, allow_used=True)
+            self._log(f"11.EXIT_USED_L -> {g.target}")
+            return g
+
+        # -- 12. explore ----------------------------------------------------
         frontier = self._frontier(state)
         if frontier is not None:
-            self._log(f"8.EXPLORE -> {frontier}")
+            self._log(f"12.EXPLORE -> {frontier}")
             return Goal(GoalKind.EXPLORE, frontier)
 
-        # 鈹€鈹€ 9. wait (should not normally be reached) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-        self._log(f"9.WAIT  chests_in_view={state.chests}  unopened={unopened_chests}  rc={[g.target for g in reachable_chests]}  mechanisms={mechanisms}  rmech={[g.target for g in reachable_mechanisms]}")
+        # -- 13. wait -------------------------------------------------------
+        self._log(f"13.WAIT  chests={state.chests}  buttons={state.buttons}  mons={state.monsters}")
         return Goal(GoalKind.WAIT)
+
+    # ------------------------------------------------------------------
+    # sticky goal
+    # ------------------------------------------------------------------
 
     def _continue_last_goal(
         self,
@@ -120,75 +181,73 @@ class RuleBasedPolicy(HighLevelPolicy):
         live_monsters: set[Position],
         mechanisms: set[Position],
         door_exits: set[Position],
+        door_locked: set[Position],
+        door_conditional: set[Position],
     ) -> Goal | None:
         goal = memory.last_goal
         if goal is None or goal.target is None:
             return None
         target = goal.target
+
         if goal.kind == GoalKind.OPEN_CHEST and target in unopened_chests:
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
+
         if goal.kind == GoalKind.ATTACK_MONSTER and target in live_monsters and self._safe_to_fight(state):
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
+
         if goal.kind == GoalKind.ACTIVATE_SWITCH and target in mechanisms:
             if self._has_unused_exits(state, memory, door_exits):
                 return None
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
+
         if goal.kind == GoalKind.GO_TO_EXIT and target in door_exits:
-            # Abandon exit if a chest or mechanism needs attention first.
+            # chests always take priority
             if unopened_chests:
                 return None
-            if self._must_clear_monsters_before_exit(state, memory, unopened_chests, mechanisms, live_monsters):
+            # locked exit without key — ignore
+            if target in door_locked and state.keys <= 0:
+                return None
+            # conditional exit with remaining buttons or monsters — ignore
+            if target in door_conditional and (state.buttons or live_monsters):
+                return None
+            # monsters still need clearing
+            if self._must_clear_monsters_before_exit(state, memory, unopened_chests, door_exits, mechanisms):
                 return None
             if state.player == target:
                 return None if globalize(state.room, target) in memory.used_exits else goal
             return goal if is_reachable(state, goal) else None
+
         return None
 
-    def _mechanisms(self, state: SymbolicState) -> set[Position]:
-        # Vision may confuse door-edge glyphs for switches/buttons. Mechanisms are
-        # floor objects; boundary door tiles should remain exits, not A targets.
-        return {pos for pos in (state.switches | state.buttons) if pos not in self._door_exits(state)}
+    # ------------------------------------------------------------------
+    # exit helpers
+    # ------------------------------------------------------------------
 
     def _door_exits(self, state: SymbolicState) -> set[Position]:
+        """All boundary-door tiles regardless of type."""
         return {
             (col, row)
-            for col, row in state.exits
+            for col, row in state.all_exits
             if (row in {0, 7} and col in {4, 5})
             or (col in {0, 9} and row in {3, 4})
         }
 
-    def _adjacent_goal(self, state: SymbolicState, goals: list[Goal]) -> Goal | None:
-        adjacent = [goal for goal in goals if goal.target is not None and manhattan(state.player, goal.target) == 1]
-        return self._nearest_goal(state, adjacent) if adjacent else None
+    def _door_normal(self, state: SymbolicState) -> set[Position]:
+        return self._door_exits(state) & state.normal_exits
 
-    def _reachable_goals(self, state: SymbolicState, kind: GoalKind, positions: set[Position]) -> list[Goal]:
-        goals = [Goal(kind, pos) for pos in positions]
-        return [goal for goal in goals if is_reachable(state, goal) or state.player == goal.target]
+    def _door_locked(self, state: SymbolicState) -> set[Position]:
+        return self._door_exits(state) & state.locked_exits
 
-    def _safe_to_fight(self, state: SymbolicState) -> bool:
-        return state.health is None or state.health > 1
+    def _door_conditional(self, state: SymbolicState) -> set[Position]:
+        return self._door_exits(state) & state.conditional_exits
 
-    def _has_unused_exits(
-        self, state: SymbolicState, memory: AgentMemory, door_exits: set[Position]
-    ) -> bool:
-        return any(
-            globalize(state.room, pos) not in memory.used_exits
-            for pos in door_exits
-        )
+    # ------------------------------------------------------------------
+    # mechanisms  (switches only — buttons handled in priority 5)
+    # ------------------------------------------------------------------
 
-    def _must_clear_monsters_before_exit(
-        self,
-        state: SymbolicState,
-        memory: AgentMemory,
-        unopened_chests: set[Position],
-        mechanisms: set[Position],
-        live_monsters: set[Position],
-    ) -> bool:
-        if not state.has_sword or not live_monsters or not self._safe_to_fight(state):
-            return False
-        if unopened_chests:
-            return False
-        return not self._has_unused_mechanisms(state, memory, mechanisms)
+    def _mechanisms(self, state: SymbolicState) -> set[Position]:
+        """Switches only — buttons are handled separately for conditional doors."""
+        return {pos for pos in state.switches if pos not in self._door_exits(state)}
 
     def _has_unused_mechanisms(
         self, state: SymbolicState, memory: AgentMemory, mechanisms: set[Position]
@@ -198,24 +257,64 @@ class RuleBasedPolicy(HighLevelPolicy):
             for pos in mechanisms
         )
 
-    def _room_is_cleared(self, state: SymbolicState, memory: AgentMemory) -> bool:
-        """Room has no valuable targets left except monsters 鈥?only then fight."""
-        unopened = {pos for pos in state.chests if globalize(state.room, pos) not in memory.opened_chests}
-        if unopened:
-            return False
-        if self._has_unused_mechanisms(state, memory, self._mechanisms(state)):
-            return False
-        return True
-
     def _mechanism_goal(self, state: SymbolicState, memory: AgentMemory, goals: list[Goal]) -> Goal | None:
         if not goals:
             return None
         if memory.switch_cooldown > 0:
             return None
-        unused = [goal for goal in goals if goal.target is not None and globalize(state.room, goal.target) not in memory.activated_switches]
+        unused = [g for g in goals if g.target is not None
+                  and globalize(state.room, g.target) not in memory.activated_switches]
         if unused:
             return self._nearest_goal(state, unused)
         return self._nearest_goal(state, goals)
+
+    # ------------------------------------------------------------------
+    # monsters
+    # ------------------------------------------------------------------
+
+    def _safe_to_fight(self, state: SymbolicState) -> bool:
+        return state.health is None or state.health > 1
+
+    def _must_clear_monsters_before_exit(
+        self,
+        state: SymbolicState,
+        memory: AgentMemory,
+        unopened_chests: set[Position],
+        door_exits: set[Position],
+        mechanisms: set[Position],
+    ) -> bool:
+        """Only fight monsters when the room is otherwise exhausted."""
+        _sword = state.has_sword
+        _mons = bool(state.monsters)
+        _safe = self._safe_to_fight(state)
+        _chests = bool(unopened_chests)
+        _exits = self._has_unused_exits(state, memory, door_exits)
+        _mechs = self._has_unused_mechanisms(state, memory, mechanisms)
+        result = (
+            _sword and _mons and _safe
+            and not _chests
+            and not _exits
+            and not _mechs
+        )
+        if self._debug:
+            self._log(
+                f"_must_clear: sword={_sword} mons={_mons} safe={_safe} "
+                f"chests={_chests} unused_exits={_exits} unused_mechs={_mechs} "
+                f"=> {result}"
+            )
+        return result
+
+    # ------------------------------------------------------------------
+    # exit ranking
+    # ------------------------------------------------------------------
+
+    def _has_unused_exits(
+        self, state: SymbolicState, memory: AgentMemory, door_exits: set[Position]
+    ) -> bool:
+        return any(
+            globalize(state.room, pos) not in memory.used_exits
+            for pos in door_exits
+        )
 
     def _best_exit_goal(
         self,
@@ -225,7 +324,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         *,
         allow_used: bool = False,
     ) -> Goal:
-        candidates = goals if allow_used else [goal for goal in goals if goal.target is not None]
+        candidates = goals if allow_used else [g for g in goals if g.target is not None]
         forward = self._avoid_entry_side(state, memory, candidates)
         candidates = forward or candidates
 
@@ -237,7 +336,8 @@ class RuleBasedPolicy(HighLevelPolicy):
             blocked_approach = 1 if self._exit_approach_blocked(state, target) else 0
             key_bonus = 0 if state.keys > 0 and target[0] == 9 else 1
             entry = 1 if self._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
-            return (used, blocked_approach, unvisited, entry, key_bonus + manhattan(state.player, target), target)
+            return (used, blocked_approach, unvisited, entry,
+                    key_bonus + manhattan(state.player, target), target)
 
         return min(candidates, key=rank)
 
@@ -270,7 +370,7 @@ class RuleBasedPolicy(HighLevelPolicy):
     def _avoid_entry_side(self, state: SymbolicState, memory: AgentMemory, goals: list[Goal]) -> list[Goal]:
         if memory.room_steps > 4:
             return goals
-        filtered = [goal for goal in goals if not self._is_entry_side(state, goal)]
+        filtered = [g for g in goals if not self._is_entry_side(state, g)]
         return filtered if filtered else goals
 
     def _is_entry_side(self, state: SymbolicState, goal: Goal) -> bool:
@@ -282,8 +382,21 @@ class RuleBasedPolicy(HighLevelPolicy):
             or (state.player[1] >= 6 and target[1] == 7)
         )
 
+    # ------------------------------------------------------------------
+    # generic helpers
+    # ------------------------------------------------------------------
+
+    def _adjacent_goal(self, state: SymbolicState, goals: list[Goal]) -> Goal | None:
+        adj = [g for g in goals if g.target is not None and manhattan(state.player, g.target) == 1]
+        return self._nearest_goal(state, adj) if adj else None
+
+    def _reachable_goals(self, state: SymbolicState, kind: GoalKind, positions: set[Position]) -> list[Goal]:
+        goals = [Goal(kind, pos) for pos in positions]
+        return [g for g in goals if is_reachable(state, g) or state.player == g.target]
+
     def _nearest_goal(self, state: SymbolicState, goals: list[Goal]) -> Goal:
-        return min(goals, key=lambda goal: (manhattan(state.player, goal.target or state.player), goal.target or (0, 0)))
+        return min(goals, key=lambda g: (manhattan(state.player, g.target or state.player),
+                                          g.target or (0, 0)))
 
     def _frontier(self, state: SymbolicState) -> Position | None:
         blockers = state.walls | state.traps | state.gaps | state.chests | state.monsters
@@ -299,11 +412,3 @@ class RuleBasedPolicy(HighLevelPolicy):
 class RLHighLevelPolicy(HighLevelPolicy):
     def choose_goal(self, state: SymbolicState, memory: AgentMemory) -> Goal:
         raise NotImplementedError("Plug a trained RL goal selector in here.")
-
-
-
-
-
-
-
-

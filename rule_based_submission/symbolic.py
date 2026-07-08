@@ -57,7 +57,9 @@ class SymbolicState:
     walls: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
     monsters: set[Position] = field(default_factory=set)
-    exits: set[Position] = field(default_factory=set)
+    normal_exits: set[Position] = field(default_factory=set)
+    locked_exits: set[Position] = field(default_factory=set)
+    conditional_exits: set[Position] = field(default_factory=set)
     traps: set[Position] = field(default_factory=set)
     buttons: set[Position] = field(default_factory=set)
     switches: set[Position] = field(default_factory=set)
@@ -69,11 +71,17 @@ class SymbolicState:
     has_sword: bool = True
     has_shield: bool = True
 
+    @property
+    def all_exits(self) -> set[Position]:
+        return self.normal_exits | self.locked_exits | self.conditional_exits
+
 
 @dataclass
 class RoomSnapshot:
     visited: bool = False
-    exits: set[Position] = field(default_factory=set)
+    normal_exits: set[Position] = field(default_factory=set)
+    locked_exits: set[Position] = field(default_factory=set)
+    conditional_exits: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
     monsters: set[Position] = field(default_factory=set)
     switches: set[Position] = field(default_factory=set)
@@ -92,9 +100,6 @@ class AgentMemory:
     previous_chests: set[Position] = field(default_factory=set)
     previous_monsters: set[Position] = field(default_factory=set)
     previous_room: RoomCoord = (0, 0)
-    previous_keys: int = 0
-    spent_keys: int = 0
-    handled_door_events: int = 0
     previous_health: int | None = None
     has_sword: bool = True
     has_shield: bool = True
@@ -118,9 +123,6 @@ class AgentMemory:
         self.room_memory.clear()
         self.previous_chests.clear()
         self.previous_monsters.clear()
-        self.previous_keys = 0
-        self.spent_keys = 0
-        self.handled_door_events = 0
         self.previous_health = None
         self.has_sword = task_id != "mathematical_logic/task_4"
         self.has_shield = True
@@ -156,10 +158,6 @@ class AgentMemory:
                 state.switches.discard(self.last_goal.target)
                 state.buttons.discard(self.last_goal.target)
                 self.switch_cooldown = 40
-        if newly_opened and self.previous_keys <= 0:
-            self.previous_keys = max(self.previous_keys, state.keys)
-        if state.keys > self.previous_keys:
-            self.previous_keys = state.keys
         if (
             self.last_goal is not None
             and self.last_goal.kind == GoalKind.EXPLORE
@@ -174,7 +172,9 @@ class AgentMemory:
         self.has_shield = self.has_shield or state.has_shield
         room = self.room_memory.setdefault(self.room, RoomSnapshot())
         room.visited = True
-        room.exits = set(state.exits)
+        room.normal_exits = set(state.normal_exits)
+        room.locked_exits = set(state.locked_exits)
+        room.conditional_exits = set(state.conditional_exits)
         room.chests = set(state.chests)
         room.monsters = set(state.monsters)
         room.switches.update(state.switches)
