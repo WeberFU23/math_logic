@@ -27,14 +27,7 @@ def action_for_goal(state: SymbolicState, goal: Goal) -> int:
 
     if goal.kind == GoalKind.GO_TO_EXIT:
         if state.player == goal.target:
-            if goal.target[1] == 0:
-                return ACTION_UP
-            if goal.target[1] == 7:
-                return ACTION_DOWN
-            if goal.target[0] == 0:
-                return ACTION_LEFT
-            if goal.target[0] == 9:
-                return ACTION_RIGHT
+            return _exit_push_action(goal.target)
         move = next_move_toward(state, goal)
         return ACTION_NOOP if move is None else move
 
@@ -45,3 +38,14 @@ def action_for_goal(state: SymbolicState, goal: Goal) -> int:
     return ACTION_NOOP
 
 
+def _exit_push_action(target: tuple[int, int]) -> int:
+    col, row = target
+    if row == 0:
+        return ACTION_UP
+    if row == 7:
+        return ACTION_DOWN
+    if col == 0:
+        return ACTION_LEFT
+    if col == 9:
+        return ACTION_RIGHT
+    return ACTION_NOOP

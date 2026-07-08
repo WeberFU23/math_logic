@@ -1,46 +1,46 @@
 from __future__ import annotations
 
-from collections import Counter
 from typing import Any
 
 import numpy as np
 
-from rule_based_submission.symbolic import (
-    GRID_HEIGHT,
-    GRID_WIDTH,
-    TILE_SIZE,
-    AgentMemory,
-    Position,
-    SymbolicState,
+from RL_based_submission.vision_extractor import (
+    ABYSS,
+    BRIDGE,
+    BUTTON,
+    BUTTON_PRESSED,
+    CHEST,
+    GAP,
+    MAP_HEIGHT_TILES,
+    MAP_WIDTH_TILES,
+    NPC,
+    SWITCH,
+    SWITCH_PRESSED,
+    TRAP,
+    UNKNOWN,
+    WALL,
+    VisionExtractor,
 )
 
-
-Color = tuple[int, int, int]
-
-OUTLINE = (8, 8, 16)
-HIGHLIGHT = (255, 244, 112)
-SHADOW = (42, 45, 88)
-PLAYER_COLORS: set[Color] = {(36, 198, 72), (126, 248, 82)}
-WALL_COLORS: set[Color] = {(255, 86, 146), (219, 18, 82), (88, 0, 36), (255, 44, 112)}
-CHEST_WOOD = (152, 82, 36)
-CHEST_OPEN_INNER = (42, 18, 16)
-MONSTER_COLORS: set[Color] = {(238, 126, 28), (255, 180, 48), (200, 78, 16), (126, 44, 0)}
-NPC_COLOR = (240, 154, 52)
-TRAP_COLORS: set[Color] = {(238, 238, 236), (112, 112, 126), (0, 0, 0)}
-EXIT_COLORS: set[Color] = {OUTLINE, HIGHLIGHT, SHADOW, (96, 48, 26), (255, 216, 80)}
-BUTTON_COLORS: set[Color] = {(40, 190, 74), (28, 112, 52), (86, 146, 104)}
-SWITCH_COLORS: set[Color] = {(255, 216, 80), (184, 124, 42)}
-GAP_COLORS: set[Color] = {(16, 22, 48), (0, 0, 0)}
-BRIDGE_COLORS: set[Color] = {(172, 104, 48), (96, 48, 26)}
+from rule_based_submission.symbolic import AgentMemory, Position, SymbolicState
 
 
-def perceive(obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None) -> SymbolicState:
-    frame = _frame_from_obs(obs)
-    grid_frame = frame[: GRID_HEIGHT * TILE_SIZE, : GRID_WIDTH * TILE_SIZE, :]
+_extractor = VisionExtractor(use_memory=True)
+
+
+def reset_vision() -> None:
+    _extractor.reset()
+
+
+def perceive(
+    obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None
+) -> SymbolicState:
+    frame = _map_frame(obs)
+    symbolic = _extractor.extract(frame)
+    static = symbolic.static  # (8, 10) grid of string labels
 
     walls: set[Position] = set()
     chests: set[Position] = set()
-    monsters: set[Position] = set()
     exits: set[Position] = set()
     traps: set[Position] = set()
     buttons: set[Position] = set()
@@ -48,50 +48,49 @@ def perceive(obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None) 
     gaps: set[Position] = set()
     bridges: set[Position] = set()
     npcs: set[Position] = set()
-    player: Position | None = None
 
-    for row in range(GRID_HEIGHT):
-        for col in range(GRID_WIDTH):
-            tile = grid_frame[row * TILE_SIZE : (row + 1) * TILE_SIZE, col * TILE_SIZE : (col + 1) * TILE_SIZE]
+    for row in range(MAP_HEIGHT_TILES):
+        for col in range(MAP_WIDTH_TILES):
+            label = static[row, col]
             pos = (col, row)
-            counts = _color_counts(tile)
-
-            if _count_any(counts, PLAYER_COLORS) >= 10:
-                player = pos
-            if _count_any(counts, WALL_COLORS) >= 60:
+            if label == WALL:
                 walls.add(pos)
-            if _is_chest(counts):
+            elif label == CHEST:
                 chests.add(pos)
-            if _count_any(counts, MONSTER_COLORS) >= 16:
-                monsters.add(pos)
-            if _is_trap(counts):
+            elif label in (TRAP, ABYSS):
                 traps.add(pos)
-            if _is_exit(counts, pos):
-                exits.add(pos)
-            if _is_switch(counts):
-                switches.add(pos)
-            elif _is_button(counts):
+            elif label in (BUTTON, BUTTON_PRESSED):
                 buttons.add(pos)
-            if _count_any(counts, GAP_COLORS) >= 80:
-                gaps.add(pos)
-            if _count_any(counts, BRIDGE_COLORS) >= 45 and _count_any(counts, {CHEST_WOOD}) < 20:
-                bridges.add(pos)
-            if counts.get(NPC_COLOR, 0) >= 40:
+            elif label in (SWITCH, SWITCH_PRESSED):
+                switches.add(pos)
+            elif label == NPC:
                 npcs.add(pos)
+            elif label == GAP:
+                gaps.add(pos)
+            elif label == BRIDGE:
+                bridges.add(pos)
+            elif label.startswith("exit_"):
+                exits.add(pos)
 
-    if player is None:
-        player = _fallback_player(memory)
+    # Player --- anchor tile from pixel centre
+    if symbolic.player is not None:
+        player: Position = symbolic.player.anchor_tile
+    else:
+        player = (4, 4)
 
-    room = memory.room
+    # Monsters --- one anchor tile per dynamic entity
+    monsters: set[Position] = set()
+    for monster in symbolic.monsters:
+        monsters.add(monster.anchor_tile)
+
+    # Clean up overlaps
     exits = exits - walls - chests - traps
-    if memory.switch_cooldown > 0:
-        switches.clear()
-        buttons.clear()
-    keys, has_sword, has_shield = _inventory(info, memory)
-    health = _health(info, frame)
+
+    keys, has_sword, has_shield, health = _inventory(info, memory)
+
     return SymbolicState(
         player=player,
-        room=room,
+        room=memory.room,
         walls=walls,
         chests=chests,
         monsters=monsters,
@@ -109,62 +108,28 @@ def perceive(obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None) 
     )
 
 
-def _frame_from_obs(obs: Any) -> np.ndarray:
-    if isinstance(obs, dict):
-        if "frame" in obs:
-            obs = obs["frame"]
-        elif "pixels" in obs:
-            obs = obs["pixels"]
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _map_frame(obs: Any) -> np.ndarray:
     frame = np.asarray(obs)
+    if frame.ndim == 4:
+        frame = frame[0]
     if frame.ndim != 3 or frame.shape[2] < 3:
-        raise ValueError(f"expected an RGB frame, got shape {frame.shape!r}")
-    return frame[:, :, :3].astype(np.uint8, copy=False)
+        raise ValueError(f"expected RGB observation, got shape {frame.shape}")
+    return frame[: MAP_HEIGHT_TILES * 16, : MAP_WIDTH_TILES * 16, :3].astype(
+        np.uint8, copy=False
+    )
 
 
-def _color_counts(tile: np.ndarray) -> Counter[Color]:
-    flat = tile.reshape(-1, 3)
-    return Counter(tuple(int(channel) for channel in pixel) for pixel in flat)
-
-
-def _count_any(counts: Counter[Color], colors: set[Color]) -> int:
-    return sum(counts.get(color, 0) for color in colors)
-
-
-def _is_chest(counts: Counter[Color]) -> bool:
-    return counts.get(CHEST_WOOD, 0) >= 35 and counts.get(OUTLINE, 0) >= 15
-
-
-def _is_trap(counts: Counter[Color]) -> bool:
-    spike = counts.get((238, 238, 236), 0) + counts.get((112, 112, 126), 0)
-    abyss = counts.get((0, 0, 0), 0)
-    return spike >= 12 or abyss >= 180
-
-
-def _is_exit(counts: Counter[Color], pos: Position) -> bool:
-    col, row = pos
-    if col not in {0, GRID_WIDTH - 1} and row not in {0, GRID_HEIGHT - 1}:
-        return False
-    exit_pixels = _count_any(counts, EXIT_COLORS)
-    # Normal doors are mostly outline/shadow/highlight, locked/conditional doors add wood/yellow.
-    return exit_pixels >= 55 and counts.get(OUTLINE, 0) >= 20
-
-
-def _is_button(counts: Counter[Color]) -> bool:
-    return _count_any(counts, BUTTON_COLORS) >= 20 and counts.get(OUTLINE, 0) >= 15
-
-
-def _is_switch(counts: Counter[Color]) -> bool:
-    return _count_any(counts, SWITCH_COLORS) >= 28 and counts.get(OUTLINE, 0) >= 20
-
-
-def _fallback_player(memory: AgentMemory) -> Position:
-    return (4, 4)
-
-
-def _inventory(info: dict[str, Any] | None, memory: AgentMemory) -> tuple[int, bool, bool]:
+def _inventory(
+    info: dict[str, Any] | None, memory: AgentMemory
+) -> tuple[int, bool, bool, int | None]:
     keys = memory.previous_keys
     has_sword = memory.has_sword
     has_shield = memory.has_shield
+    health: int | None = None
     if isinstance(info, dict):
         inventory = info.get("inventory", {})
         if isinstance(inventory, dict):
@@ -178,26 +143,10 @@ def _inventory(info: dict[str, Any] | None, memory: AgentMemory) -> tuple[int, b
             text = f"{equipped} {items}".lower()
             has_sword = has_sword or "sword" in text
             has_shield = has_shield or "shield" in text
-    return keys, has_sword, has_shield
-
-
-def _health(info: dict[str, Any] | None, frame: np.ndarray) -> int | None:
-    if isinstance(info, dict):
         agent = info.get("agent", {})
         if isinstance(agent, dict) and "hp" in agent:
             try:
-                return int(agent["hp"])
+                health = int(agent["hp"])
             except (TypeError, ValueError):
                 pass
-    return _extract_health_from_hud(frame)
-
-
-def _extract_health_from_hud(frame: np.ndarray) -> int | None:
-    hud = frame[GRID_HEIGHT * TILE_SIZE :, :, :]
-    heart_pixels = np.all(hud == np.array((172, 8, 64), dtype=np.uint8), axis=2).sum()
-    if heart_pixels <= 0:
-        return None
-    return max(1, int(round(heart_pixels / 18)))
-
-
-
+    return keys, has_sword, has_shield, health

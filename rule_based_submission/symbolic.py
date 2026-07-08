@@ -146,22 +146,16 @@ class AgentMemory:
     def update(self, state: SymbolicState) -> None:
         self.observe_room_transition(state.player)
         state.room = self.room
-        newly_opened = self.previous_chests - state.chests
-        self.opened_chests.update(globalize_all(self.previous_room, newly_opened))
+        newly_opened: set[Position] = set()
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
-            if self.last_goal.kind == GoalKind.OPEN_CHEST:
+            if self.last_goal.kind == GoalKind.OPEN_CHEST and manhattan(state.player, self.last_goal.target) <= 1:
                 self.opened_chests.add(globalize(self.room, self.last_goal.target))
-                if self.room in self.room_memory:
-                    self.room_memory[self.room].chests.discard(self.last_goal.target)
-                state.chests.discard(self.last_goal.target)
                 newly_opened.add(self.last_goal.target)
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
                 self.activated_switches.add(globalize(self.room, self.last_goal.target))
                 state.switches.discard(self.last_goal.target)
                 state.buttons.discard(self.last_goal.target)
                 self.switch_cooldown = 40
-            elif self.last_goal.kind == GoalKind.GO_TO_EXIT:
-                self.used_exits.add(globalize(self.room, self.last_goal.target))
         if newly_opened and self.previous_keys <= 0:
             self.previous_keys = max(self.previous_keys, state.keys)
         if state.keys > self.previous_keys:
@@ -194,6 +188,7 @@ class AgentMemory:
         if self.switch_cooldown > 0:
             self.switch_cooldown -= 1
     def _clear_previous_room_objects(self) -> None:
+        self.last_goal = None
         self.room_steps = 0
         self.switch_cooldown = 0
         self.previous_chests.clear()

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
@@ -51,66 +51,64 @@ class RuleBasedPolicy(HighLevelPolicy):
         )
         reachable_all_exits = self._reachable_goals(state, GoalKind.GO_TO_EXIT, door_exits)
 
-        # ── 1. sticky goal ───────────────────────────────────────────
+        # 鈹€鈹€ 1. sticky goal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         sticky_goal = self._continue_last_goal(
             state, memory, unopened_chests, live_monsters, mechanisms, door_exits,
         )
         if sticky_goal is not None:
-            self._log(f"1.STICKY  → {sticky_goal.kind.value}:{sticky_goal.target}")
+            self._log(f"1.STICKY  鈫?{sticky_goal.kind.value}:{sticky_goal.target}")
             return sticky_goal
 
-        # ── 2. adjacent actionable  ──────────────────────────────────
+        # 鈹€鈹€ 2. adjacent actionable  鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         adjacent = self._adjacent_goal(state, reachable_chests)
         if adjacent is not None:
-            self._log(f"2.ADJ_CHEST → {adjacent.target}")
+            self._log(f"2.ADJ_CHEST 鈫?{adjacent.target}")
             return adjacent
         if state.has_sword:
             adjacent = self._adjacent_goal(state, reachable_monsters)
             if adjacent is not None and self._safe_to_fight(state):
-                self._log(f"2.ADJ_MON → {adjacent.target}")
+                self._log(f"2.ADJ_MON 鈫?{adjacent.target}")
                 return adjacent
-        adjacent = self._adjacent_goal(state, reachable_mechanisms)
-        if adjacent is not None:
-            self._log(f"2.ADJ_MECH → {adjacent.target}")
-            return adjacent
 
-        # ── 3. reachable chests ──────────────────────────────────────
+        # 鈹€鈹€ 3. reachable chests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if reachable_chests:
             goal = self._nearest_goal(state, reachable_chests)
-            self._log(f"3.CHEST → {goal.target}")
+            self._log(f"3.CHEST 鈫?{goal.target}")
             return goal
 
-        # ── 4. unused exits ──────────────────────────────────────────
+        # 4. required monsters: no value targets remain, only doors/walls/monsters.
+        if reachable_monsters and self._must_clear_monsters_before_exit(
+            state, memory, unopened_chests, mechanisms, live_monsters,
+        ):
+            goal = self._nearest_goal(state, reachable_monsters)
+            self._log(f"4.MONSTER_REQUIRED -> {goal.target}")
+            return goal
+
+        # 5. unused exits for exploration
         if reachable_new_exits:
             goal = self._best_exit_goal(state, memory, reachable_new_exits)
-            self._log(f"4.EXIT_NEW → {goal.target}  candidates={[g.target for g in reachable_new_exits]}")
+            self._log(f"5.EXIT_NEW -> {goal.target}  candidates={[g.target for g in reachable_new_exits]}")
             return goal
 
-        # ── 5. mechanisms ────────────────────────────────────────────
+        # 6. mechanisms after exploration exits
         mechanism_goal = self._mechanism_goal(state, memory, reachable_mechanisms)
         if mechanism_goal is not None:
-            self._log(f"5.MECH → {mechanism_goal.target}")
+            self._log(f"6.MECH -> {mechanism_goal.target}")
             return mechanism_goal
 
-        # ── 6. monsters (only when the room has nothing else of value) ─
-        if state.has_sword and reachable_monsters and self._room_is_cleared(state, memory):
-            goal = self._nearest_goal(state, reachable_monsters)
-            self._log(f"6.MONSTER → {goal.target}")
-            return goal
-
-        # ── 7. used exits (fallback) ─────────────────────────────────
+        # 7. used exits (fallback)
         if reachable_all_exits:
             goal = self._best_exit_goal(state, memory, reachable_all_exits, allow_used=True)
-            self._log(f"7.EXIT_USED → {goal.target}")
+            self._log(f"7.EXIT_USED -> {goal.target}")
             return goal
 
-        # ── 8. explore ───────────────────────────────────────────────
+        # 8. explore fallback
         frontier = self._frontier(state)
         if frontier is not None:
-            self._log(f"8.EXPLORE → {frontier}")
+            self._log(f"8.EXPLORE -> {frontier}")
             return Goal(GoalKind.EXPLORE, frontier)
 
-        # ── 9. wait (should not normally be reached) ─────────────────
+        # 鈹€鈹€ 9. wait (should not normally be reached) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         self._log(f"9.WAIT  chests_in_view={state.chests}  unopened={unopened_chests}  rc={[g.target for g in reachable_chests]}  mechanisms={mechanisms}  rmech={[g.target for g in reachable_mechanisms]}")
         return Goal(GoalKind.WAIT)
 
@@ -132,14 +130,20 @@ class RuleBasedPolicy(HighLevelPolicy):
         if goal.kind == GoalKind.ATTACK_MONSTER and target in live_monsters and self._safe_to_fight(state):
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
         if goal.kind == GoalKind.ACTIVATE_SWITCH and target in mechanisms:
+            if self._has_unused_exits(state, memory, door_exits):
+                return None
             return goal if is_reachable(state, goal) or manhattan(state.player, target) == 1 else None
         if goal.kind == GoalKind.GO_TO_EXIT and target in door_exits:
-            if mechanisms and (state.keys > 0 or state.has_sword):
+            # Abandon exit if a chest or mechanism needs attention first.
+            if unopened_chests:
+                return None
+            if self._must_clear_monsters_before_exit(state, memory, unopened_chests, mechanisms, live_monsters):
                 return None
             if state.player == target:
                 return None if globalize(state.room, target) in memory.used_exits else goal
             return goal if is_reachable(state, goal) else None
         return None
+
     def _mechanisms(self, state: SymbolicState) -> set[Position]:
         # Vision may confuse door-edge glyphs for switches/buttons. Mechanisms are
         # floor objects; boundary door tiles should remain exits, not A targets.
@@ -164,19 +168,42 @@ class RuleBasedPolicy(HighLevelPolicy):
     def _safe_to_fight(self, state: SymbolicState) -> bool:
         return state.health is None or state.health > 1
 
+    def _has_unused_exits(
+        self, state: SymbolicState, memory: AgentMemory, door_exits: set[Position]
+    ) -> bool:
+        return any(
+            globalize(state.room, pos) not in memory.used_exits
+            for pos in door_exits
+        )
+
+    def _must_clear_monsters_before_exit(
+        self,
+        state: SymbolicState,
+        memory: AgentMemory,
+        unopened_chests: set[Position],
+        mechanisms: set[Position],
+        live_monsters: set[Position],
+    ) -> bool:
+        if not state.has_sword or not live_monsters or not self._safe_to_fight(state):
+            return False
+        if unopened_chests:
+            return False
+        return not self._has_unused_mechanisms(state, memory, mechanisms)
+
+    def _has_unused_mechanisms(
+        self, state: SymbolicState, memory: AgentMemory, mechanisms: set[Position]
+    ) -> bool:
+        return any(
+            globalize(state.room, pos) not in memory.activated_switches
+            for pos in mechanisms
+        )
+
     def _room_is_cleared(self, state: SymbolicState, memory: AgentMemory) -> bool:
-        """Room has no valuable targets left except monsters — only then fight."""
+        """Room has no valuable targets left except monsters 鈥?only then fight."""
         unopened = {pos for pos in state.chests if globalize(state.room, pos) not in memory.opened_chests}
         if unopened:
             return False
-        unused_exits = {pos for pos in self._door_exits(state) if globalize(state.room, pos) not in memory.used_exits}
-        if unused_exits:
-            return False
-        unused_mechanisms = {
-            pos for pos in self._mechanisms(state)
-            if globalize(state.room, pos) not in memory.activated_switches
-        }
-        if unused_mechanisms:
+        if self._has_unused_mechanisms(state, memory, self._mechanisms(state)):
             return False
         return True
 
@@ -264,7 +291,7 @@ class RuleBasedPolicy(HighLevelPolicy):
             (col, row)
             for row in range(8)
             for col in range(10)
-            if (col, row) not in blockers
+            if (col, row) not in blockers and (col, row) != state.player
         }
         return nearest(candidates, state.player)
 

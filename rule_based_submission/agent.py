@@ -24,7 +24,7 @@ from rule_based_submission.symbolic import (
     manhattan,
     next_position,
 )
-from rule_based_submission.vision import perceive
+from rule_based_submission.vision import perceive, reset_vision
 
 
 class Policy:
@@ -46,6 +46,7 @@ class Policy:
         self._queued_action = 0
         self._queued_ticks = 0
         self._facing = ACTION_RIGHT
+        reset_vision()
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
         self._step += 1
@@ -58,9 +59,6 @@ class Policy:
                 self._queued_ticks -= 1
                 self.memory.last_action = urgent_action
                 return urgent_action
-            candidate = next_position(state.player, self._queued_action)
-            if self._is_door_exit(state.player) and state.player in state.exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8):
-                self._mark_exit_used(state.room, state.player)
             self._queued_ticks -= 1
             self.memory.last_action = self._queued_action
             self._facing = self._queued_action
@@ -75,16 +73,17 @@ class Policy:
             return urgent_action
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
         raw_action = action_for_goal(state, goal)
+        unstick_nudge = False
         if self._blocked_action == raw_action and self._blocked_ticks > 0:
-            raw_action = self._unstick_action(state, goal, raw_action)
+            adjusted_action = self._unstick_action(state, goal, raw_action)
+            unstick_nudge = adjusted_action != raw_action
+            raw_action = adjusted_action
         action = shield(raw_action, state)
         if action in MOVE_DELTAS:
             candidate = next_position(state.player, action)
             leaving_through_exit = self._is_door_exit(state.player) and state.player in state.exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
-            if leaving_through_exit:
-                self._mark_exit_used(state.room, state.player)
             self._queued_action = action
-            self._queued_ticks = 23 if leaving_through_exit else self._move_queue_ticks(state)
+            self._queued_ticks = 23 if leaving_through_exit else (1 if unstick_nudge else self._move_queue_ticks(state))
         else:
             self._queued_action = 0
             self._queued_ticks = 0
@@ -118,6 +117,7 @@ class Policy:
             self._blocked_ticks = min(6, self._blocked_ticks + 1)
             self._queued_action = ACTION_NOOP
             self._queued_ticks = 0
+            self.memory.pending_room_delta = None
         elif self._blocked_ticks > 0:
             self._blocked_ticks -= 1
             if self._blocked_ticks == 0:
@@ -128,6 +128,8 @@ class Policy:
             for record in records
         ):
             self._force_fight_ticks = 240
+
+        self._observe_exit_events(records)
 
         door_events = sum(
             1
@@ -141,23 +143,34 @@ class Policy:
         self.memory.previous_keys = max(0, self.memory.previous_keys - spent)
         self.memory.handled_door_events = door_events
 
+    def _observe_exit_events(self, records: list[dict[str, Any]]) -> None:
+        for record in records:
+            if not isinstance(record, dict) or record.get("name") != "exit_reached":
+                continue
+            target = None
+            if self.memory.last_goal is not None and self.memory.last_goal.kind == GoalKind.GO_TO_EXIT:
+                target = self.memory.last_goal.target
+            if target is not None:
+                self._mark_exit_used(self.memory.room, target)
+            direction = str(record.get("direction", ""))
+            delta = {
+                "north": (0, -1),
+                "south": (0, 1),
+                "west": (-1, 0),
+                "east": (1, 0),
+            }.get(direction)
+            if delta is not None:
+                self.memory.pending_room_delta = delta
+            self._queued_action = ACTION_NOOP
+            self._queued_ticks = 0
+            return
     def _is_door_exit(self, pos) -> bool:
         col, row = pos
         return ((row in {0, 7} and col in {4, 5}) or (col in {0, 9} and row in {3, 4}))
+
     def _mark_exit_used(self, room, pos) -> None:
         self.memory.used_exits.add(globalize(room, pos))
-        if room == (0, 0) and self.memory.previous_keys > 0:
-            self.memory.previous_keys -= 1
-            self.memory.spent_keys += 1
         col, row = pos
-        if row == 0:
-            self.memory.pending_room_delta = (0, -1)
-        elif row == 7:
-            self.memory.pending_room_delta = (0, 1)
-        elif col == 0:
-            self.memory.pending_room_delta = (-1, 0)
-        elif col == 9:
-            self.memory.pending_room_delta = (1, 0)
         if row in {0, 7}:
             for other_col in (col - 1, col + 1):
                 if 0 <= other_col < 10:
@@ -183,6 +196,10 @@ class Policy:
     def _unstick_action(self, state: SymbolicState, goal: Goal, blocked_action: int) -> int:
         if blocked_action not in MOVE_DELTAS:
             return blocked_action
+        if goal.kind == GoalKind.GO_TO_EXIT and goal.target is not None:
+            nudge = self._exit_corner_nudge(state, goal.target, blocked_action)
+            if nudge is not None:
+                return nudge
         candidates = [
             action for action in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT)
             if action != blocked_action
@@ -204,6 +221,32 @@ class Policy:
                 best = score
                 best_action = action
         return best_action
+
+    def _exit_corner_nudge(self, state: SymbolicState, target: Position, blocked_action: int) -> int | None:
+        if blocked_action in {ACTION_LEFT, ACTION_RIGHT} and target[0] in {0, 9}:
+            front_col = state.player[0] + (-1 if blocked_action == ACTION_LEFT else 1)
+            above_front = (front_col, state.player[1] - 1)
+            below_front = (front_col, state.player[1] + 1)
+            if not is_walkable(above_front, state, allow_goal=True) and self._can_step(state, ACTION_DOWN):
+                return ACTION_DOWN
+            if not is_walkable(below_front, state, allow_goal=True) and self._can_step(state, ACTION_UP):
+                return ACTION_UP
+
+        if blocked_action in {ACTION_UP, ACTION_DOWN} and target[1] in {0, 7}:
+            front_row = state.player[1] + (-1 if blocked_action == ACTION_UP else 1)
+            left_front = (state.player[0] - 1, front_row)
+            right_front = (state.player[0] + 1, front_row)
+            if not is_walkable(left_front, state, allow_goal=True) and self._can_step(state, ACTION_RIGHT):
+                return ACTION_RIGHT
+            if not is_walkable(right_front, state, allow_goal=True) and self._can_step(state, ACTION_LEFT):
+                return ACTION_LEFT
+        return None
+
+    def _can_step(self, state: SymbolicState, action: int) -> bool:
+        pos = next_position(state.player, action)
+        if not is_walkable(pos, state, allow_goal=True):
+            return False
+        return pos not in state.monsters
 
     def _same_axis(self, left: int, right: int) -> bool:
         return {left, right} <= {ACTION_UP, ACTION_DOWN} or {left, right} <= {ACTION_LEFT, ACTION_RIGHT}
@@ -246,14 +289,14 @@ class Policy:
 
         # ── adjacent (dist == 1) ──────────────────────────────────────
         if dist == 1:
-            # facing the monster → attack
+            # facing the monster �?attack
             if state.has_sword and self._is_facing(state.player, target):
                 return ACTION_A
-            # not facing → step back to create distance, then re-approach
+            # not facing �?step back to create distance, then re-approach
             retreat = self._step_away(state, target)
             if retreat is not None:
                 return retreat
-            # can't step back → shield as last resort to push monster away
+            # can't step back �?shield as last resort to push monster away
             if state.has_shield:
                 return ACTION_B
             return None
