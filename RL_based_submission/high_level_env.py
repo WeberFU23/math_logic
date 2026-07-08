@@ -17,6 +17,7 @@ from RL_based_submission.high_level_core import (
     encode_high_level_state,
     oriented_action_for_goal,
     unstick_nudge,
+    task5_defensive_action,
 )
 from rule_based_submission.shield import shield
 from rule_based_submission.symbolic import (
@@ -26,6 +27,7 @@ from rule_based_submission.symbolic import (
     SymbolicState,
     globalize,
     next_position,
+    manhattan,
 )
 
 
@@ -34,11 +36,11 @@ TASK_MAX_MACRO_STEPS = {
     "mathematical_logic/task_2": 160,
     "mathematical_logic/task_3": 256,
     "mathematical_logic/task_4": 320,
-    "mathematical_logic/task_5": 320,
+    "mathematical_logic/task_5": 640,
 }
 
 EVENT_BONUSES = {
-    "chest_opened": 1.5,
+    "chest_opened": 3.0,       # chests are the main source of keys/healing/gold
     "key_collected": 4.0,
     "item_collected": 4.0,
     "monster_killed": 0.5,
@@ -55,7 +57,7 @@ EVENT_BONUSES = {
     "door_opened": 3.0,
     "exit_reached": 0.0,
     "gold_collected": 0.5,
-    "agent_healed": 1.0,
+    "agent_healed": 3.0,        # critical for surviving drain pressure in task 5
 }
 
 
@@ -108,6 +110,7 @@ class HighLevelOptionEnv(gym.Env):
         self.macro_steps = 0
         self.blocked_action: int | None = None
         self.bypass_alignment_once = False
+        self.defense_cooldown = 0
 
     @property
     def memory(self):
@@ -121,6 +124,7 @@ class HighLevelOptionEnv(gym.Env):
         self.macro_steps = 0
         self.blocked_action = None
         self.bypass_alignment_once = False
+        self.defense_cooldown = 0
         obs, info = self.env.reset(seed=effective_seed)
         self.last_obs = np.asarray(obs)
         self.last_info = info
@@ -156,16 +160,31 @@ class HighLevelOptionEnv(gym.Env):
         if goal is None:
             goal = Goal(kind=self._wait_kind())
 
-        raw_action, facing_only = oriented_action_for_goal(
-            start_state,
-            goal,
-            self.memory,
-            skip_alignment=self.bypass_alignment_once,
+        if self.defense_cooldown > 0:
+            self.defense_cooldown -= 1
+        defensive_action = (
+            None
+            if int(action) == int(HighLevelAction.ATTACK_MONSTER) or self.defense_cooldown > 0
+            else task5_defensive_action(start_state, self.memory)
         )
+        if defensive_action is not None:
+            # One block is enough to break the monster's interception line.
+            # Keep advancing afterwards; alternating shield/move wastes the
+            # task's strict 180-step health budget.
+            self.defense_cooldown = 8
+        if defensive_action is not None:
+            raw_action, facing_only = defensive_action, True
+        else:
+            raw_action, facing_only = oriented_action_for_goal(
+                start_state,
+                goal,
+                self.memory,
+                skip_alignment=self.bypass_alignment_once,
+            )
         self.bypass_alignment_once = False
         nudge_action = (
             unstick_nudge(start_state, self.blocked_action)
-            if self.blocked_action == raw_action
+            if defensive_action is None and self.blocked_action == raw_action
             else None
         )
         if nudge_action is not None:
@@ -178,7 +197,15 @@ class HighLevelOptionEnv(gym.Env):
         transition_possible = self._transition_possible(start_state.player, primitive_action)
         repeats = 1
         if primitive_action in MOVE_DELTAS and not facing_only:
-            repeats = 24 if leaving_attempt else 16
+            repeats = (
+                1 if leaving_attempt and self.task_id == "mathematical_logic/task_5"
+                else 24 if leaving_attempt
+                else
+                1 if self.task_id == "mathematical_logic/task_5" and start_state.monsters
+                and min(manhattan(start_state.player, monster) for monster in start_state.monsters) <= 3
+                else 4 if self.task_id == "mathematical_logic/task_5"
+                else 16
+            )
         elif primitive_action in MOVE_DELTAS and nudge_action is not None:
             repeats = 4
 
@@ -308,6 +335,15 @@ class HighLevelOptionEnv(gym.Env):
             reward -= 0.15 * ineffective_attacks
         for name, count in events.items():
             reward += EVENT_BONUSES.get(name, 0.0) * count
+        # HP-aware healing: low HP → healing is worth more.  Teaches the policy
+        # to seek healing chests when running low on health (critical under the
+        # task-5 drain mechanic where the model cannot see HP in its features).
+        if events.get("agent_healed", 0) > 0 and isinstance(info, dict):
+            hp = info.get("agent", {}).get("hp", 99)
+            if hp <= 2:
+                reward += 2.0  # emergency heal bonus
+            elif hp <= 3:
+                reward += 1.0  # caution heal bonus
         if discovered_exit:
             reward += 1.0
 

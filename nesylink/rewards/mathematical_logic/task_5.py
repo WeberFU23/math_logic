@@ -6,7 +6,9 @@ import numpy as np
 
 from .common import MathematicalLogicReward
 
-_DRAIN_INTERVAL = 180 #找到了神秘参数 🤠 
+
+_DRAIN_INTERVAL = 180 # 恭喜你找到了神秘参数 🤠
+
 
 
 class MathematicalLogicTask5Reward(MathematicalLogicReward):

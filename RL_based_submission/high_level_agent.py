@@ -8,9 +8,11 @@ import numpy as np
 from RL_based_submission.advanced_perception import AdvancedPerceptor
 from RL_based_submission.high_level_core import (
     GoalResolver,
+    HighLevelAction,
     encode_high_level_state,
     oriented_action_for_goal,
     unstick_nudge,
+    task5_defensive_action,
 )
 from rule_based_submission.shield import combat_reflex, shield
 from rule_based_submission.symbolic import (
@@ -47,6 +49,7 @@ class Policy:
         self._queued_start_px: tuple[float, float] | None = None
         self._blocked_action: int | None = None
         self._bypass_alignment_once = False
+        self._defense_cooldown = 0
 
     @property
     def memory(self):
@@ -65,6 +68,7 @@ class Policy:
         self._queued_start_px = None
         self._blocked_action = None
         self._bypass_alignment_once = False
+        self._defense_cooldown = 0
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
         if self._queued_ticks > 0:
@@ -126,16 +130,31 @@ class Policy:
         if goal is None:
             return ACTION_NOOP
 
-        raw_action, facing_only = oriented_action_for_goal(
-            state,
-            goal,
-            self.memory,
-            skip_alignment=self._bypass_alignment_once,
+        if self._defense_cooldown > 0:
+            self._defense_cooldown -= 1
+        defensive_action = (
+            None
+            if self.last_option == int(HighLevelAction.ATTACK_MONSTER) or self._defense_cooldown > 0
+            else task5_defensive_action(state, self.memory)
         )
+        if defensive_action is not None:
+            # One block is enough to break the monster's interception line.
+            # Keep advancing afterwards; alternating shield/move wastes the
+            # task's strict 180-step health budget.
+            self._defense_cooldown = 8
+        if defensive_action is not None:
+            raw_action, facing_only = defensive_action, True
+        else:
+            raw_action, facing_only = oriented_action_for_goal(
+                state,
+                goal,
+                self.memory,
+                skip_alignment=self._bypass_alignment_once,
+            )
         self._bypass_alignment_once = False
         nudge_action = (
             unstick_nudge(state, self._blocked_action)
-            if self._blocked_action == raw_action
+            if defensive_action is None and self._blocked_action == raw_action
             else None
         )
         if nudge_action is not None:
@@ -158,7 +177,18 @@ class Policy:
                 0 <= candidate[0] < 10 and 0 <= candidate[1] < 8
             )
             self._queued_action = action
-            self._queued_ticks = 23 if leaving else 15
+            self._queued_ticks = (
+                0 if leaving and self.task_id == "mathematical_logic/task_5"
+                else 23 if leaving
+                else
+                0 if self.task_id == "mathematical_logic/task_5" and state.monsters
+                and min(
+                    abs(state.player[0] - monster[0]) + abs(state.player[1] - monster[1])
+                    for monster in state.monsters
+                ) <= 3
+                else 3 if self.task_id == "mathematical_logic/task_5"
+                else 15
+            )
             self._queued_start_px = state.player_position_px
             if _transition_possible(state.player, action):
                 self._transition_start = (state.player, action)

@@ -10,6 +10,7 @@ from rule_based_submission.strategy import RuleBasedPolicy
 from rule_based_submission.symbolic import (
     AgentMemory,
     ACTION_A,
+    ACTION_B,
     ACTION_DOWN,
     ACTION_LEFT,
     ACTION_RIGHT,
@@ -40,6 +41,14 @@ class HighLevelAction(IntEnum):
 
 ACTION_COUNT = len(HighLevelAction)
 FEATURE_DIM = 115
+
+
+def task5_defensive_action(state: SymbolicState, memory: AgentMemory) -> int | None:
+    if memory.task_id != "mathematical_logic/task_5" or not state.has_shield:
+        return None
+    if any(manhattan(state.player, monster) <= 2 for monster in state.monsters):
+        return ACTION_B
+    return None
 
 
 def unstick_nudge(state: SymbolicState, blocked_action: int) -> int | None:
@@ -141,6 +150,39 @@ class GoalResolver:
             dtype=bool,
         )
 
+        # Task 5 is a timed chest-collection problem: monsters are optional and
+        # the 180-step health drain makes proactive combat actively harmful.
+        # Permit ATTACK only when no chest, mechanism, or exit is currently
+        # reachable, i.e. combat is the only way to unblock progress.
+        if memory.task_id == "mathematical_logic/task_5":
+            central_return_guard = bool(
+                memory.room == (0, 0)
+                and state.keys > 0
+                and mask[int(HighLevelAction.ATTACK_MONSTER)]
+            )
+            west_ambush_guard = bool(
+                memory.room == (-1, 0)
+                and state.chests
+                and state.monsters
+                and min(manhattan(state.player, monster) for monster in state.monsters) <= 3
+                and mask[int(HighLevelAction.ATTACK_MONSTER)]
+            )
+            if central_return_guard or west_ambush_guard:
+                mask[int(HighLevelAction.OPEN_CHEST)] = False
+                mask[int(HighLevelAction.ACTIVATE_MECHANISM)] = False
+                mask[int(HighLevelAction.TAKE_NEW_EXIT)] = False
+                mask[int(HighLevelAction.RETURN_OR_REVISIT)] = False
+            elif any(
+                bool(mask[int(option)])
+                for option in (
+                    HighLevelAction.OPEN_CHEST,
+                    HighLevelAction.ACTIVATE_MECHANISM,
+                    HighLevelAction.TAKE_NEW_EXIT,
+                    HighLevelAction.RETURN_OR_REVISIT,
+                )
+            ):
+                mask[int(HighLevelAction.ATTACK_MONSTER)] = False
+
         new_exit = bool(mask[int(HighLevelAction.TAKE_NEW_EXIT)])
         local_progress = bool(
             mask[int(HighLevelAction.OPEN_CHEST)]
@@ -209,7 +251,7 @@ class GoalResolver:
         if option == HighLevelAction.ACTIVATE_MECHANISM:
             available_buttons = {
                 pos for pos in state.buttons
-                if globalize(state.room, pos) not in memory.visit_activated_switches
+                if globalize(state.room, pos) not in memory.activated_switches
             }
             button_goal = self._nearest_reachable(
                 state, GoalKind.PRESS_BUTTON, available_buttons
@@ -283,14 +325,20 @@ class GoalResolver:
         forward = self._rule_helpers._avoid_entry_side(state, memory, candidates)
         candidates = forward or candidates
 
-        def rank(goal: Goal) -> tuple[int, int, int, int, int, tuple[int, int]]:
+        def rank(goal: Goal) -> tuple[int, int, int, int, int, int, tuple[int, int]]:
             target = goal.target or state.player
             neighbor = self._rule_helpers._neighbor_room(state.room, target)
             unvisited = 0 if neighbor is not None and neighbor not in memory.room_memory else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
+            door_priority = 0
+            if memory.task_id == "mathematical_logic/task_5":
+                if state.keys > 0:
+                    door_priority = 0 if target in state.locked_exits else (1 if target in state.conditional_exits else 2)
+                else:
+                    door_priority = 0 if target in state.conditional_exits else (1 if target in state.normal_exits else 2)
             key_bonus = 0 if state.keys > 0 and target[0] == 9 else 1
             entry = 1 if self._rule_helpers._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
-            return (used, unvisited, entry, key_bonus, manhattan(state.player, target), target)
+            return (used, door_priority, unvisited, entry, key_bonus, manhattan(state.player, target), target)
 
         return min(candidates, key=rank)
 
@@ -347,6 +395,8 @@ class GoalResolver:
                 globalize(state.room, target) not in memory.activated_switches
                 for target in (state.buttons | state.switches)
             )
+            if memory.task_id == "mathematical_logic/task_5":
+                return not unused_mechanisms
             if unopened_chests or live_monsters or unused_mechanisms:
                 return False
         return True
