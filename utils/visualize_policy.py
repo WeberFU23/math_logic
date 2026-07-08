@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stride", type=int, default=4, help="Keep one rendered frame every N env steps.")
     parser.add_argument("--scale", type=int, default=3, help="Integer image scale factor.")
     parser.add_argument("--no-overlay", action="store_true", help="Save raw game frames without text overlay.")
+    parser.add_argument("--debug", action="store_true", help="Print per-step decision logs to stdout.")
     return parser.parse_args()
 
 
@@ -55,7 +56,7 @@ def main() -> None:
 
 
 def run_episode(args: argparse.Namespace) -> tuple[list[Image.Image], dict[str, Any]]:
-    policy = make_policy()
+    policy = make_policy(debug=args.debug)
     policy.reset(seed=args.seed, task_id=args.task)
     env = make_env(
         task_id=args.task,

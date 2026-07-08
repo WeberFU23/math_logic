@@ -28,29 +28,34 @@ from rule_based_submission.vision import perceive
 
 
 class Policy:
-    def __init__(self, high_level_policy: HighLevelPolicy | None = None) -> None:
+    def __init__(self, high_level_policy: HighLevelPolicy | None = None, *, debug: bool = False) -> None:
         self.memory = AgentMemory()
-        self.high_level_policy = high_level_policy or RuleBasedPolicy()
+        self.high_level_policy = high_level_policy or RuleBasedPolicy(debug=debug)
         self._queued_action = 0
         self._queued_ticks = 0
         self._blocked_action: int | None = None
         self._blocked_ticks = 0
         self._force_fight_ticks = 0
+        self._facing: int = ACTION_RIGHT
+        self._debug = debug
+        self._step = 0
 
     def reset(self, seed: int | None = None, task_id: str | None = None) -> None:
         del seed
         self.memory.reset(task_id=task_id)
         self._queued_action = 0
         self._queued_ticks = 0
+        self._facing = ACTION_RIGHT
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
+        self._step += 1
         self._observe_events(info)
         if self._queued_ticks > 0:
             state = perceive(obs, self.memory, info)
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
-                self._queued_action = ACTION_NOOP
-                self._queued_ticks = 0
+                self._log(f"QUEUE INTERRUPT reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
+                self._queued_ticks -= 1
                 self.memory.last_action = urgent_action
                 return urgent_action
             candidate = next_position(state.player, self._queued_action)
@@ -58,15 +63,14 @@ class Policy:
                 self._mark_exit_used(state.room, state.player)
             self._queued_ticks -= 1
             self.memory.last_action = self._queued_action
+            self._facing = self._queued_action
             return self._queued_action
 
         state = perceive(obs, self.memory, info)
         self.memory.update(state)
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
-            self._queued_action = ACTION_NOOP
-            self._queued_ticks = 0
-            self.memory.last_goal = None
+            self._log(f"PLAN  reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
             self.memory.last_action = urgent_action
             return urgent_action
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
@@ -86,8 +90,20 @@ class Policy:
             self._queued_ticks = 0
         self.memory.last_goal = goal
         self.memory.last_action = action
+        if action in MOVE_DELTAS:
+            self._facing = action
+        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.exits}  room={state.room}  player={state.player}")
         return action
 
+
+    def _log(self, msg: str) -> None:
+        if self._debug:
+            print(f"[step {self._step}] {msg}")
+
+    _ACT_NAMES: dict[int, str] = {
+        ACTION_NOOP: "NOOP", ACTION_UP: "UP", ACTION_DOWN: "DOWN",
+        ACTION_LEFT: "LEFT", ACTION_RIGHT: "RIGHT", ACTION_A: "A", ACTION_B: "B",
+    }
 
     def _observe_events(self, info: dict[str, Any] | None) -> None:
         if not isinstance(info, dict):
@@ -200,113 +216,102 @@ class Policy:
             return 1
         return 3
 
+    def _is_facing(self, player: Position, target: Position) -> bool:
+        """True when the angle between the facing ray and player→target vector is < 90°.
+
+        Equivalent to: dot product of facing direction and (target - player) > 0.
+        """
+        dx = target[0] - player[0]
+        dy = target[1] - player[1]
+        if self._facing == ACTION_UP:
+            return dy < 0
+        if self._facing == ACTION_DOWN:
+            return dy > 0
+        if self._facing == ACTION_LEFT:
+            return dx < 0
+        if self._facing == ACTION_RIGHT:
+            return dx > 0
+        return False
+
     def _combat_reflex(self, state: SymbolicState) -> int | None:
         if not state.monsters:
             return None
 
-        adjacent = [monster for monster in state.monsters if manhattan(state.player, monster) == 1]
-        if adjacent:
-            target = min(adjacent, key=lambda monster: self._monster_rank(state, monster))
-            toward = self._action_toward(state.player, target)
-            if state.has_sword and self._last_facing_action() == toward:
+        near_threats = [monster for monster in state.monsters if manhattan(state.player, monster) <= 2]
+        if not near_threats:
+            return None
+
+        target = min(near_threats, key=lambda monster: self._monster_rank(state, monster))
+        dist = manhattan(state.player, target)
+
+        # ── adjacent (dist == 1) ──────────────────────────────────────
+        if dist == 1:
+            # facing the monster → attack
+            if state.has_sword and self._is_facing(state.player, target):
                 return ACTION_A
-            retreat = self._retreat_action(state, target)
-            if retreat is not None and (not state.has_sword or self._low_health(state)):
-                return retreat
-            if state.has_shield and (not state.has_sword or self._low_health(state)):
-                return ACTION_B
-            # When the sword is available but the facing is wrong, taking a short
-            # step away lets the normal planner step back into an attack stance.
+            # not facing → step back to create distance, then re-approach
+            retreat = self._step_away(state, target)
             if retreat is not None:
                 return retreat
-            return ACTION_A if state.has_sword else (ACTION_B if state.has_shield else ACTION_NOOP)
-
-        near_threats = [monster for monster in state.monsters if manhattan(state.player, monster) <= 2]
-        if near_threats:
-            threat = min(near_threats, key=lambda monster: self._monster_rank(state, monster))
-            if self._low_health(state) or not state.has_sword:
-                retreat = self._retreat_action(state, threat)
-                if retreat is not None:
-                    return retreat
-                if state.has_shield:
-                    return ACTION_B
-            engage = self._approach_attack_action(state, threat)
-            if engage is not None:
-                return engage
-            if state.has_shield and self.memory.last_action != ACTION_B:
+            # can't step back → shield as last resort to push monster away
+            if state.has_shield:
                 return ACTION_B
+            return None
+
+        # ── one tile gap (dist == 2) ──────────────────────────────────
+        if state.has_sword:
+            approach = self._step_toward_safe(state, target)
+            if approach is not None:
+                return approach
+        if state.has_shield:
+            return ACTION_B
         return None
 
-    def _approach_attack_action(self, state: SymbolicState, monster: Position) -> int | None:
-        if not state.has_sword or manhattan(state.player, monster) != 2:
-            return None
-        # Only close distance when one step will leave the player adjacent and
-        # facing the monster; L-shaped approaches tend to create a wrong-facing
-        # melee state, so shield/normal planning is safer there.
-        if state.player[0] != monster[0] and state.player[1] != monster[1]:
-            return None
-        action = self._action_toward(state.player, monster)
-        if action is None:
-            return None
-        pos = next_position(state.player, action)
-        if pos in state.monsters or not is_walkable(pos, state, allow_goal=True):
-            return None
-        if manhattan(pos, monster) != 1:
-            return None
-        return action
-
-    def _monster_rank(self, state: SymbolicState, monster: Position) -> tuple[int, int, Position]:
-        facing_penalty = 0 if self._last_facing_action() == self._action_toward(state.player, monster) else 1
-        return (manhattan(state.player, monster), facing_penalty, monster)
-
-    def _low_health(self, state: SymbolicState) -> bool:
-        return state.health is not None and state.health <= 2
-
-    def _retreat_action(self, state: SymbolicState, monster: Position) -> int | None:
-        toward = self._action_toward(state.player, monster)
-        opposite = {
-            ACTION_UP: ACTION_DOWN,
-            ACTION_DOWN: ACTION_UP,
-            ACTION_LEFT: ACTION_RIGHT,
-            ACTION_RIGHT: ACTION_LEFT,
-        }.get(toward)
-        candidates = [opposite] if opposite is not None else []
-        candidates.extend(
-            action for action in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT)
-            if action != opposite and action != toward
-        )
-
-        best: tuple[int, int] | None = None
-        best_action: int | None = None
+    def _step_away(self, state: SymbolicState, monster: Position) -> int | None:
+        """Move one tile directly away from the monster, if walkable."""
+        dx = monster[0] - state.player[0]
+        dy = monster[1] - state.player[1]
+        # prefer the dominant axis for retreat
+        candidates = []
+        if abs(dx) >= abs(dy):
+            candidates = [ACTION_LEFT if dx > 0 else ACTION_RIGHT,
+                          ACTION_UP if dy > 0 else ACTION_DOWN]
+        else:
+            candidates = [ACTION_UP if dy > 0 else ACTION_DOWN,
+                          ACTION_LEFT if dx > 0 else ACTION_RIGHT]
+        candidates.extend(a for a in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT) if a not in candidates)
         for action in candidates:
             pos = next_position(state.player, action)
             if not is_walkable(pos, state, allow_goal=True):
                 continue
-            distance = min(manhattan(pos, other) for other in state.monsters)
-            if distance <= manhattan(state.player, monster):
+            if pos in state.monsters:
                 continue
-            score = (distance, 1 if action == opposite else 0)
-            if best is None or score > best:
-                best = score
+            if manhattan(pos, monster) > 1:
+                return action
+        return None
+
+    def _step_toward_safe(self, state: SymbolicState, monster: Position) -> int | None:
+        """Move one step toward the monster without walking into any monster."""
+        best_action: int | None = None
+        best_dist = 999
+        for action in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT):
+            pos = next_position(state.player, action)
+            if not is_walkable(pos, state, allow_goal=True):
+                continue
+            if pos in state.monsters:
+                continue
+            d = manhattan(pos, monster)
+            if d < best_dist:
+                best_dist = d
                 best_action = action
         return best_action
 
-    def _last_facing_action(self) -> int | None:
-        return self.memory.last_action if self.memory.last_action in MOVE_DELTAS else None
+    def _monster_rank(self, state: SymbolicState, monster: Position) -> tuple[int, int, Position]:
+        facing_penalty = 0 if self._is_facing(state.player, monster) else 1
+        return (manhattan(state.player, monster), facing_penalty, monster)
 
-    def _action_toward(self, start: Position, target: Position) -> int | None:
-        dx = target[0] - start[0]
-        dy = target[1] - start[1]
-        if abs(dx) > abs(dy):
-            return ACTION_RIGHT if dx > 0 else ACTION_LEFT
-        if dy != 0:
-            return ACTION_DOWN if dy > 0 else ACTION_UP
-        if dx != 0:
-            return ACTION_RIGHT if dx > 0 else ACTION_LEFT
-        return None
-
-def make_policy() -> Policy:
-    return Policy()
+def make_policy(*, debug: bool = False) -> Policy:
+    return Policy(debug=debug)
 
 
 

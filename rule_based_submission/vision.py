@@ -12,7 +12,6 @@ from rule_based_submission.symbolic import (
     AgentMemory,
     Position,
     SymbolicState,
-    globalize,
 )
 
 
@@ -85,7 +84,6 @@ def perceive(obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None) 
 
     room = memory.room
     exits = exits - walls - chests - traps
-    monsters = {pos for pos in monsters if globalize(room, pos) not in memory.killed_monsters}
     if memory.switch_cooldown > 0:
         switches.clear()
         buttons.clear()

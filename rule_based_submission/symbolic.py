@@ -86,7 +86,6 @@ class AgentMemory:
     room: RoomCoord = (0, 0)
     last_goal: Goal | None = None
     opened_chests: set[GlobalPosition] = field(default_factory=set)
-    killed_monsters: set[GlobalPosition] = field(default_factory=set)
     activated_switches: set[GlobalPosition] = field(default_factory=set)
     used_exits: set[GlobalPosition] = field(default_factory=set)
     room_memory: dict[RoomCoord, RoomSnapshot] = field(default_factory=dict)
@@ -114,7 +113,6 @@ class AgentMemory:
         self.previous_room = (0, 0)
         self.last_goal = None
         self.opened_chests.clear()
-        self.killed_monsters.clear()
         self.activated_switches.clear()
         self.used_exits.clear()
         self.room_memory.clear()
@@ -150,7 +148,6 @@ class AgentMemory:
         state.room = self.room
         newly_opened = self.previous_chests - state.chests
         self.opened_chests.update(globalize_all(self.previous_room, newly_opened))
-        self.killed_monsters.update(globalize_all(self.previous_room, self.previous_monsters - state.monsters))
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
             if self.last_goal.kind == GoalKind.OPEN_CHEST:
                 self.opened_chests.add(globalize(self.room, self.last_goal.target))
@@ -158,11 +155,6 @@ class AgentMemory:
                     self.room_memory[self.room].chests.discard(self.last_goal.target)
                 state.chests.discard(self.last_goal.target)
                 newly_opened.add(self.last_goal.target)
-            elif self.last_goal.kind == GoalKind.ATTACK_MONSTER and self.last_goal.target not in state.monsters:
-                self.killed_monsters.add(globalize(self.room, self.last_goal.target))
-                if self.room in self.room_memory:
-                    self.room_memory[self.room].monsters.discard(self.last_goal.target)
-                state.monsters.discard(self.last_goal.target)
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
                 self.activated_switches.add(globalize(self.room, self.last_goal.target))
                 state.switches.discard(self.last_goal.target)
