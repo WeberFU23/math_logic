@@ -53,6 +53,7 @@ class Goal:
 @dataclass
 class SymbolicState:
     player: Position
+    player_center_px: tuple[float, float] | None = None
     room: RoomCoord = (0, 0)
     walls: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
@@ -140,10 +141,24 @@ class AgentMemory:
             dx, dy = self.pending_room_delta
             self.room = (self.room[0] + dx, self.room[1] + dy)
             self.pending_room_delta = None
+            self._mark_entry_exit_used((dx, dy))
             self._clear_previous_room_objects()
             return
 
-
+    def _mark_entry_exit_used(self, delta: RoomCoord) -> None:
+        dx, dy = delta
+        if dx > 0:
+            entry_tiles = ((0, 3), (0, 4))
+        elif dx < 0:
+            entry_tiles = ((9, 3), (9, 4))
+        elif dy > 0:
+            entry_tiles = ((4, 0), (5, 0))
+        elif dy < 0:
+            entry_tiles = ((4, 7), (5, 7))
+        else:
+            return
+        for pos in entry_tiles:
+            self.used_exits.add(globalize(self.room, pos))
 
     def update(self, state: SymbolicState) -> None:
         self.observe_room_transition(state.player)

@@ -81,12 +81,13 @@ def perceive(
             elif label.startswith("exit_"):
                 normal_exits.add(pos)
 
-    # Player --- anchor tile from pixel centre
+    # Player --- anchor tile from vision pixel centre.
     if symbolic.player is not None:
         player: Position = symbolic.player.anchor_tile
+        player_center_px = symbolic.player.center_px
     else:
         player = (4, 4)
-
+        player_center_px = None
     # Monsters --- one anchor tile per dynamic entity
     monsters: set[Position] = set()
     for monster in symbolic.monsters:
@@ -101,6 +102,7 @@ def perceive(
 
     return SymbolicState(
         player=player,
+        player_center_px=player_center_px,
         room=memory.room,
         walls=walls,
         chests=chests,

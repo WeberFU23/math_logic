@@ -20,6 +20,7 @@ from rule_based_submission.symbolic import (
     MOVE_DELTAS,
     Position,
     SymbolicState,
+    TILE_SIZE,
     globalize,
     manhattan,
     next_position,
@@ -55,7 +56,7 @@ class Policy:
             state = perceive(obs, self.memory, info)
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
-                self._log(f"QUEUE INTERRUPT reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
+                self._log(f"QUEUE INTERRUPT reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
                 if urgent_action == ACTION_A:
                     self._force_fight_ticks = 240
                 self._queued_ticks -= 1
@@ -70,7 +71,7 @@ class Policy:
         self.memory.update(state)
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
-            self._log(f"PLAN  reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
+            self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
             if urgent_action == ACTION_A:
                 self._force_fight_ticks = 240
             self.memory.last_action = urgent_action
@@ -78,16 +79,25 @@ class Policy:
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
         raw_action = action_for_goal(state, goal)
         unstick_nudge = False
+        pixel_nudge = False
         if self._blocked_action == raw_action and self._blocked_ticks > 0:
-            adjusted_action = self._unstick_action(state, goal, raw_action)
+            adjusted_action = self._alignment_action(state, raw_action)
+            if adjusted_action is None:
+                adjusted_action = self._unstick_action(state, goal, raw_action)
+            else:
+                pixel_nudge = True
             unstick_nudge = adjusted_action != raw_action
             raw_action = adjusted_action
+        align_action = self._alignment_action(state, raw_action)
+        if align_action is not None:
+            pixel_nudge = True
+            raw_action = align_action
         action = shield(raw_action, state)
         if action in MOVE_DELTAS:
             candidate = next_position(state.player, action)
             leaving_through_exit = self._is_door_exit(state.player) and state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
             self._queued_action = action
-            self._queued_ticks = 23 if leaving_through_exit else (1 if unstick_nudge else self._move_queue_ticks(state))
+            self._queued_ticks = 23 if leaving_through_exit else (0 if pixel_nudge else (1 if unstick_nudge else self._move_queue_ticks(state)))
         else:
             self._queued_action = 0
             self._queued_ticks = 0
@@ -182,6 +192,51 @@ class Policy:
         self._log(f"FORCED_COMBAT -> {target}  (ticks_left={self._force_fight_ticks})")
         return Goal(GoalKind.ATTACK_MONSTER, target)
 
+    def _alignment_action(self, state: SymbolicState, action: int) -> int | None:
+        if action not in MOVE_DELTAS or state.player_center_px is None:
+            return None
+        candidate = next_position(state.player, action)
+        if state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8):
+            return None
+
+        col, row = state.player
+        center_x, center_y = state.player_center_px
+        target_x = col * TILE_SIZE + TILE_SIZE / 2.0
+        target_y = row * TILE_SIZE + TILE_SIZE / 2.0
+        corner_margin = 1.0
+        center_tolerance = 2.0
+
+        if action in {ACTION_UP, ACTION_DOWN}:
+            forward_row = row + (-1 if action == ACTION_UP else 1)
+            left_front_blocked = not is_walkable((col - 1, forward_row), state, allow_goal=True)
+            right_front_blocked = not is_walkable((col + 1, forward_row), state, allow_goal=True)
+            if left_front_blocked and right_front_blocked:
+                if center_x < target_x - center_tolerance and self._can_step(state, ACTION_RIGHT):
+                    return ACTION_RIGHT
+                if center_x > target_x + center_tolerance and self._can_step(state, ACTION_LEFT):
+                    return ACTION_LEFT
+            elif left_front_blocked:
+                if center_x < target_x + corner_margin and self._can_step(state, ACTION_RIGHT):
+                    return ACTION_RIGHT
+            elif right_front_blocked:
+                if center_x > target_x - corner_margin and self._can_step(state, ACTION_LEFT):
+                    return ACTION_LEFT
+        elif action in {ACTION_LEFT, ACTION_RIGHT}:
+            forward_col = col + (-1 if action == ACTION_LEFT else 1)
+            up_front_blocked = not is_walkable((forward_col, row - 1), state, allow_goal=True)
+            down_front_blocked = not is_walkable((forward_col, row + 1), state, allow_goal=True)
+            if up_front_blocked and down_front_blocked:
+                if center_y < target_y - center_tolerance and self._can_step(state, ACTION_DOWN):
+                    return ACTION_DOWN
+                if center_y > target_y + center_tolerance and self._can_step(state, ACTION_UP):
+                    return ACTION_UP
+            elif up_front_blocked:
+                if center_y < target_y + corner_margin and self._can_step(state, ACTION_DOWN):
+                    return ACTION_DOWN
+            elif down_front_blocked:
+                if center_y > target_y - corner_margin and self._can_step(state, ACTION_UP):
+                    return ACTION_UP
+        return None
     def _unstick_action(self, state: SymbolicState, goal: Goal, blocked_action: int) -> int:
         if blocked_action not in MOVE_DELTAS:
             return blocked_action
@@ -249,7 +304,7 @@ class Policy:
         return 3
 
     def _is_facing(self, player: Position, target: Position) -> bool:
-        """True when the angle between the facing ray and player→target vector is < 90°.
+        """True when the angle between the facing ray and player-target vector is < 90 degrees.
 
         Equivalent to: dot product of facing direction and (target - player) > 0.
         """
@@ -282,14 +337,14 @@ class Policy:
 
         # -- cardinal adjacent (manhattan == 1) -------------------------
         if m_dist == 1:
-            # facing the monster �?attack
+            # facing the monster: attack
             if state.has_sword and self._is_facing(state.player, target):
                 return ACTION_A
-            # not facing �?step back to create distance, then re-approach
+            # not facing: step back to create distance, then re-approach
             retreat = self._step_away(state, target)
             if retreat is not None:
                 return retreat
-            # can't step back �?shield as last resort to push monster away
+            # can't step back: shield as last resort to push monster away
             if state.has_shield:
                 return ACTION_B
             return None
@@ -352,7 +407,7 @@ class Policy:
         mx, my = monster
         dist = manhattan(player, monster)
         if dist <= 1:
-            return False  # adjacent — no tile can be between
+            return False  # adjacent: no tile can be between
         # same row
         if py == my:
             step = 1 if mx > px else -1
@@ -365,7 +420,7 @@ class Policy:
             for y in range(py + step, my, step):
                 if (px, y) in state.walls:
                     return True
-        # diagonal — both corner tiles must be walls to block
+        # diagonal: both corner tiles must be walls to block
         else:
             return (mx, py) in state.walls and (px, my) in state.walls
         return False

@@ -307,20 +307,22 @@ class RuleBasedPolicy(HighLevelPolicy):
         _sword = state.has_sword
         _mons = bool(state.monsters)
         _safe = self._safe_to_fight(state)
-        _chests = bool(unopened_chests)
+        _chests = bool(state.chests)
+        _switches = bool(state.switches)
+        _buttons = bool(state.buttons)
         _exits = self._has_unused_exits(state, memory, door_exits)
-        _mechs = self._has_unused_mechanisms(state, memory, mechanisms)
         result = (
             _sword and _mons and _safe
             and not _chests
+            and not _switches
+            and not _buttons
             and not _exits
-            and not _mechs
         )
         if self._debug:
             self._log(
                 f"_must_clear: sword={_sword} mons={_mons} safe={_safe} "
-                f"chests={_chests} unused_exits={_exits} unused_mechs={_mechs} "
-                f"=> {result}"
+                f"chests={_chests} switches={_switches} buttons={_buttons} "
+                f"unused_exits={_exits} => {result}"
             )
         return result
 
