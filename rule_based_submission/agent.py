@@ -4,7 +4,7 @@ from typing import Any
 
 from rule_based_submission.executor import action_for_goal
 from rule_based_submission.planner import is_walkable
-from rule_based_submission.shield import shield
+from rule_based_submission.shield import combat_reflex, shield
 from rule_based_submission.strategy import HighLevelPolicy, RuleBasedPolicy
 from rule_based_submission.symbolic import (
     ACTION_A,
@@ -20,6 +20,7 @@ from rule_based_submission.symbolic import (
     MOVE_DELTAS,
     Position,
     SymbolicState,
+    TILE_SIZE,
     globalize,
     manhattan,
     next_position,
@@ -53,9 +54,11 @@ class Policy:
         self._observe_events(info)
         if self._queued_ticks > 0:
             state = perceive(obs, self.memory, info)
-            urgent_action = self._combat_reflex(state)
+            urgent_action = combat_reflex(state, self._facing, state.has_sword, state.has_shield)
             if urgent_action is not None:
-                self._log(f"QUEUE INTERRUPT reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
+                self._log(f"QUEUE INTERRUPT reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
+                if urgent_action == ACTION_A:
+                    self._force_fight_ticks = 240
                 self._queued_ticks -= 1
                 self.memory.last_action = urgent_action
                 return urgent_action
@@ -66,24 +69,35 @@ class Policy:
 
         state = perceive(obs, self.memory, info)
         self.memory.update(state)
-        urgent_action = self._combat_reflex(state)
+        urgent_action = combat_reflex(state, self._facing, state.has_sword, state.has_shield)
         if urgent_action is not None:
-            self._log(f"PLAN  reflex→{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
+            self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
+            if urgent_action == ACTION_A:
+                self._force_fight_ticks = 240
             self.memory.last_action = urgent_action
             return urgent_action
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
         raw_action = action_for_goal(state, goal)
         unstick_nudge = False
+        pixel_nudge = False
         if self._blocked_action == raw_action and self._blocked_ticks > 0:
-            adjusted_action = self._unstick_action(state, goal, raw_action)
+            adjusted_action = self._alignment_action(state, raw_action)
+            if adjusted_action is None:
+                adjusted_action = self._unstick_action(state, goal, raw_action)
+            else:
+                pixel_nudge = True
             unstick_nudge = adjusted_action != raw_action
             raw_action = adjusted_action
+        align_action = self._alignment_action(state, raw_action)
+        if align_action is not None:
+            pixel_nudge = True
+            raw_action = align_action
         action = shield(raw_action, state)
         if action in MOVE_DELTAS:
             candidate = next_position(state.player, action)
-            leaving_through_exit = self._is_door_exit(state.player) and state.player in state.exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
+            leaving_through_exit = self._is_door_exit(state.player) and state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
             self._queued_action = action
-            self._queued_ticks = 23 if leaving_through_exit else (1 if unstick_nudge else self._move_queue_ticks(state))
+            self._queued_ticks = 23 if leaving_through_exit else (0 if pixel_nudge else (1 if unstick_nudge else self._move_queue_ticks(state)))
         else:
             self._queued_action = 0
             self._queued_ticks = 0
@@ -91,7 +105,10 @@ class Policy:
         self.memory.last_action = action
         if action in MOVE_DELTAS:
             self._facing = action
-        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.exits}  room={state.room}  player={state.player}")
+        if action == ACTION_A and state.monsters:
+            if any(manhattan(state.player, m) <= 2 for m in state.monsters):
+                self._force_fight_ticks = 240
+        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
 
 
@@ -123,25 +140,7 @@ class Policy:
             if self._blocked_ticks == 0:
                 self._blocked_action = None
 
-        if any(
-            isinstance(record, dict) and record.get("name") in {"shield_block", "agent_damaged", "monster_damaged"}
-            for record in records
-        ):
-            self._force_fight_ticks = 240
-
         self._observe_exit_events(records)
-
-        door_events = sum(
-            1
-            for record in records
-            if isinstance(record, dict) and record.get("name") == "door_opened"
-        )
-        if door_events <= self.memory.handled_door_events:
-            return
-        spent = door_events - self.memory.handled_door_events
-        self.memory.spent_keys += spent
-        self.memory.previous_keys = max(0, self.memory.previous_keys - spent)
-        self.memory.handled_door_events = door_events
 
     def _observe_exit_events(self, records: list[dict[str, Any]]) -> None:
         for record in records:
@@ -186,13 +185,58 @@ class Policy:
         if self._force_fight_ticks <= 0:
             return None
         self._force_fight_ticks -= 1
-        if not state.has_sword or not state.monsters:
+        if not state.has_sword or not state.monsters or (state.health is not None and state.health <= 1):
+            self._force_fight_ticks = 0
             return None
-        if state.health is not None and state.health <= 1:
-            return None
-        target = min(state.monsters, key=lambda monster: self._monster_rank(state, monster))
+        target = min(state.monsters, key=lambda m: manhattan(state.player, m))
+        self._log(f"FORCED_COMBAT -> {target}  (ticks_left={self._force_fight_ticks})")
         return Goal(GoalKind.ATTACK_MONSTER, target)
 
+    def _alignment_action(self, state: SymbolicState, action: int) -> int | None:
+        if action not in MOVE_DELTAS or state.player_center_px is None:
+            return None
+        candidate = next_position(state.player, action)
+        if state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8):
+            return None
+
+        col, row = state.player
+        center_x, center_y = state.player_center_px
+        target_x = col * TILE_SIZE + TILE_SIZE / 2.0
+        target_y = row * TILE_SIZE + TILE_SIZE / 2.0
+        corner_margin = 1.0
+        center_tolerance = 2.0
+
+        if action in {ACTION_UP, ACTION_DOWN}:
+            forward_row = row + (-1 if action == ACTION_UP else 1)
+            left_front_blocked = not is_walkable((col - 1, forward_row), state, allow_goal=True)
+            right_front_blocked = not is_walkable((col + 1, forward_row), state, allow_goal=True)
+            if left_front_blocked and right_front_blocked:
+                if center_x < target_x - center_tolerance and self._can_step(state, ACTION_RIGHT):
+                    return ACTION_RIGHT
+                if center_x > target_x + center_tolerance and self._can_step(state, ACTION_LEFT):
+                    return ACTION_LEFT
+            elif left_front_blocked:
+                if center_x < target_x + corner_margin and self._can_step(state, ACTION_RIGHT):
+                    return ACTION_RIGHT
+            elif right_front_blocked:
+                if center_x > target_x - corner_margin and self._can_step(state, ACTION_LEFT):
+                    return ACTION_LEFT
+        elif action in {ACTION_LEFT, ACTION_RIGHT}:
+            forward_col = col + (-1 if action == ACTION_LEFT else 1)
+            up_front_blocked = not is_walkable((forward_col, row - 1), state, allow_goal=True)
+            down_front_blocked = not is_walkable((forward_col, row + 1), state, allow_goal=True)
+            if up_front_blocked and down_front_blocked:
+                if center_y < target_y - center_tolerance and self._can_step(state, ACTION_DOWN):
+                    return ACTION_DOWN
+                if center_y > target_y + center_tolerance and self._can_step(state, ACTION_UP):
+                    return ACTION_UP
+            elif up_front_blocked:
+                if center_y < target_y + corner_margin and self._can_step(state, ACTION_DOWN):
+                    return ACTION_DOWN
+            elif down_front_blocked:
+                if center_y > target_y - corner_margin and self._can_step(state, ACTION_UP):
+                    return ACTION_UP
+        return None
     def _unstick_action(self, state: SymbolicState, goal: Goal, blocked_action: int) -> int:
         if blocked_action not in MOVE_DELTAS:
             return blocked_action
@@ -259,104 +303,8 @@ class Policy:
             return 1
         return 3
 
-    def _is_facing(self, player: Position, target: Position) -> bool:
-        """True when the angle between the facing ray and player→target vector is < 90°.
-
-        Equivalent to: dot product of facing direction and (target - player) > 0.
-        """
-        dx = target[0] - player[0]
-        dy = target[1] - player[1]
-        if self._facing == ACTION_UP:
-            return dy < 0
-        if self._facing == ACTION_DOWN:
-            return dy > 0
-        if self._facing == ACTION_LEFT:
-            return dx < 0
-        if self._facing == ACTION_RIGHT:
-            return dx > 0
-        return False
-
-    def _combat_reflex(self, state: SymbolicState) -> int | None:
-        if not state.monsters:
-            return None
-
-        near_threats = [monster for monster in state.monsters if manhattan(state.player, monster) <= 2]
-        if not near_threats:
-            return None
-
-        target = min(near_threats, key=lambda monster: self._monster_rank(state, monster))
-        dist = manhattan(state.player, target)
-
-        # ── adjacent (dist == 1) ──────────────────────────────────────
-        if dist == 1:
-            # facing the monster �?attack
-            if state.has_sword and self._is_facing(state.player, target):
-                return ACTION_A
-            # not facing �?step back to create distance, then re-approach
-            retreat = self._step_away(state, target)
-            if retreat is not None:
-                return retreat
-            # can't step back �?shield as last resort to push monster away
-            if state.has_shield:
-                return ACTION_B
-            return None
-
-        # ── one tile gap (dist == 2) ──────────────────────────────────
-        if state.has_sword:
-            approach = self._step_toward_safe(state, target)
-            if approach is not None:
-                return approach
-        if state.has_shield:
-            return ACTION_B
-        return None
-
-    def _step_away(self, state: SymbolicState, monster: Position) -> int | None:
-        """Move one tile directly away from the monster, if walkable."""
-        dx = monster[0] - state.player[0]
-        dy = monster[1] - state.player[1]
-        # prefer the dominant axis for retreat
-        candidates = []
-        if abs(dx) >= abs(dy):
-            candidates = [ACTION_LEFT if dx > 0 else ACTION_RIGHT,
-                          ACTION_UP if dy > 0 else ACTION_DOWN]
-        else:
-            candidates = [ACTION_UP if dy > 0 else ACTION_DOWN,
-                          ACTION_LEFT if dx > 0 else ACTION_RIGHT]
-        candidates.extend(a for a in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT) if a not in candidates)
-        for action in candidates:
-            pos = next_position(state.player, action)
-            if not is_walkable(pos, state, allow_goal=True):
-                continue
-            if pos in state.monsters:
-                continue
-            if manhattan(pos, monster) > 1:
-                return action
-        return None
-
-    def _step_toward_safe(self, state: SymbolicState, monster: Position) -> int | None:
-        """Move one step toward the monster without walking into any monster."""
-        best_action: int | None = None
-        best_dist = 999
-        for action in (ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT):
-            pos = next_position(state.player, action)
-            if not is_walkable(pos, state, allow_goal=True):
-                continue
-            if pos in state.monsters:
-                continue
-            d = manhattan(pos, monster)
-            if d < best_dist:
-                best_dist = d
-                best_action = action
-        return best_action
-
-    def _monster_rank(self, state: SymbolicState, monster: Position) -> tuple[int, int, Position]:
-        facing_penalty = 0 if self._is_facing(state.player, monster) else 1
-        return (manhattan(state.player, monster), facing_penalty, monster)
-
 def make_policy(*, debug: bool = False) -> Policy:
     return Policy(debug=debug)
-
-
 
 
 

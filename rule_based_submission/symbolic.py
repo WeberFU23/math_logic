@@ -54,12 +54,16 @@ class Goal:
 @dataclass
 class SymbolicState:
     player: Position
+    player_center_px: tuple[float, float] | None = None
+    # Backward-compatible alias used by RL high-level code.
     player_position_px: tuple[float, float] | None = None
     room: RoomCoord = (0, 0)
     walls: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
     monsters: set[Position] = field(default_factory=set)
-    exits: set[Position] = field(default_factory=set)
+    normal_exits: set[Position] = field(default_factory=set)
+    locked_exits: set[Position] = field(default_factory=set)
+    conditional_exits: set[Position] = field(default_factory=set)
     traps: set[Position] = field(default_factory=set)
     buttons: set[Position] = field(default_factory=set)
     switches: set[Position] = field(default_factory=set)
@@ -74,16 +78,21 @@ class SymbolicState:
     has_sword: bool = True
     has_shield: bool = True
 
+    @property
+    def all_exits(self) -> set[Position]:
+        return self.normal_exits | self.locked_exits | self.conditional_exits
+
 
 @dataclass
 class RoomSnapshot:
     visited: bool = False
-    exits: set[Position] = field(default_factory=set)
+    normal_exits: set[Position] = field(default_factory=set)
+    locked_exits: set[Position] = field(default_factory=set)
+    conditional_exits: set[Position] = field(default_factory=set)
     chests: set[Position] = field(default_factory=set)
     monsters: set[Position] = field(default_factory=set)
     switches: set[Position] = field(default_factory=set)
     buttons: set[Position] = field(default_factory=set)
-    locked_exits: set[Position] = field(default_factory=set)
 
 
 @dataclass
@@ -150,10 +159,24 @@ class AgentMemory:
             dx, dy = self.pending_room_delta
             self.room = (self.room[0] + dx, self.room[1] + dy)
             self.pending_room_delta = None
+            self._mark_entry_exit_used((dx, dy))
             self._clear_previous_room_objects()
             return
 
-
+    def _mark_entry_exit_used(self, delta: RoomCoord) -> None:
+        dx, dy = delta
+        if dx > 0:
+            entry_tiles = ((0, 3), (0, 4))
+        elif dx < 0:
+            entry_tiles = ((9, 3), (9, 4))
+        elif dy > 0:
+            entry_tiles = ((4, 0), (5, 0))
+        elif dy < 0:
+            entry_tiles = ((4, 7), (5, 7))
+        else:
+            return
+        for pos in entry_tiles:
+            self.used_exits.add(globalize(self.room, pos))
 
     def update(self, state: SymbolicState) -> None:
         self.observe_room_transition(state.player)
@@ -189,6 +212,9 @@ class AgentMemory:
             self.activated_switches.add(mechanism)
             self.visit_activated_switches.add(mechanism)
             state.buttons.discard(self.last_goal.target)
+        # button: triggers automatically when stepped on
+        if state.player in state.buttons:
+            self.activated_switches.add(globalize(self.room, state.player))
         if newly_opened and self.previous_keys <= 0:
             self.previous_keys = max(self.previous_keys, state.keys)
         if state.keys > self.previous_keys:
@@ -207,7 +233,9 @@ class AgentMemory:
         self.has_shield = self.has_shield or state.has_shield
         room = self.room_memory.setdefault(self.room, RoomSnapshot())
         room.visited = True
-        room.exits = set(state.exits)
+        room.normal_exits = set(state.normal_exits)
+        room.locked_exits = set(state.locked_exits)
+        room.conditional_exits = set(state.conditional_exits)
         room.chests = set(state.chests)
         room.monsters = set(state.monsters)
         room.switches.update(state.switches)

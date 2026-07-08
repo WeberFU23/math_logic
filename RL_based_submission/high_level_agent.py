@@ -10,8 +10,9 @@ from RL_based_submission.high_level_core import (
     GoalResolver,
     encode_high_level_state,
     oriented_action_for_goal,
+    unstick_nudge,
 )
-from rule_based_submission.shield import shield
+from rule_based_submission.shield import combat_reflex, shield
 from rule_based_submission.symbolic import (
     ACTION_NOOP,
     MOVE_DELTAS,
@@ -43,6 +44,9 @@ class Policy:
         self._queued_ticks = 0
         self._transition_start: tuple[tuple[int, int], int] | None = None
         self._state: SymbolicState | None = None
+        self._queued_start_px: tuple[float, float] | None = None
+        self._blocked_action: int | None = None
+        self._bypass_alignment_once = False
 
     @property
     def memory(self):
@@ -58,9 +62,22 @@ class Policy:
         self._queued_ticks = 0
         self._transition_start = None
         self._state = None
+        self._queued_start_px = None
+        self._blocked_action = None
+        self._bypass_alignment_once = False
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
         if self._queued_ticks > 0:
+            state = self.perceptor.perceive(obs, info)
+            urgent = combat_reflex(state, self.memory.facing_action,
+                                   state.has_sword, state.has_shield)
+            if urgent is not None:
+                self._queued_ticks = 0
+                self._queued_action = ACTION_NOOP
+                self.memory.last_action = urgent
+                if urgent in MOVE_DELTAS:
+                    self.memory.facing_action = urgent
+                return urgent
             self._queued_ticks -= 1
             return self._queued_action
 
@@ -73,6 +90,13 @@ class Policy:
             self.perceptor.reset_room_vision()
 
         state = self.perceptor.perceive(obs, info)
+        if self._queued_start_px is not None and state.player_position_px is not None:
+            moved = (
+                abs(self._queued_start_px[0] - state.player_position_px[0])
+                + abs(self._queued_start_px[1] - state.player_position_px[1])
+            )
+            self._blocked_action = self._queued_action if moved < 0.5 else None
+        self._queued_start_px = None
         if self._transition_start is not None:
             start, transition_action = self._transition_start
             if _transition_succeeded(start, state.player):
@@ -102,20 +126,40 @@ class Policy:
         if goal is None:
             return ACTION_NOOP
 
-        raw_action, facing_only = oriented_action_for_goal(state, goal, self.memory)
+        raw_action, facing_only = oriented_action_for_goal(
+            state,
+            goal,
+            self.memory,
+            skip_alignment=self._bypass_alignment_once,
+        )
+        self._bypass_alignment_once = False
+        nudge_action = (
+            unstick_nudge(state, self._blocked_action)
+            if self._blocked_action == raw_action
+            else None
+        )
+        if nudge_action is not None:
+            raw_action = nudge_action
+            facing_only = True
+            self._blocked_action = None
+            self._bypass_alignment_once = True
         action = raw_action if facing_only else shield(raw_action, state)
         self.memory.last_goal = goal
         self.memory.last_action = action
         if action in MOVE_DELTAS:
             self.memory.facing_action = action
 
-        if action in MOVE_DELTAS and not facing_only:
+        if action in MOVE_DELTAS and nudge_action is not None:
+            self._queued_action = action
+            self._queued_ticks = 3
+        elif action in MOVE_DELTAS and not facing_only:
             candidate = next_position(state.player, action)
-            leaving = state.player in state.exits and not (
+            leaving = state.player in state.all_exits and not (
                 0 <= candidate[0] < 10 and 0 <= candidate[1] < 8
             )
             self._queued_action = action
             self._queued_ticks = 23 if leaving else 15
+            self._queued_start_px = state.player_position_px
             if _transition_possible(state.player, action):
                 self._transition_start = (state.player, action)
         else:

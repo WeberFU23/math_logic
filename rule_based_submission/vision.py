@@ -41,7 +41,9 @@ def perceive(
 
     walls: set[Position] = set()
     chests: set[Position] = set()
-    exits: set[Position] = set()
+    normal_exits: set[Position] = set()
+    locked_exits: set[Position] = set()
+    conditional_exits: set[Position] = set()
     traps: set[Position] = set()
     buttons: set[Position] = set()
     switches: set[Position] = set()
@@ -69,32 +71,45 @@ def perceive(
                 gaps.add(pos)
             elif label == BRIDGE:
                 bridges.add(pos)
+            elif "locked_key" in label:
+                if "_open_" in label:
+                    normal_exits.add(pos)
+                else:
+                    locked_exits.add(pos)
+            elif "conditional" in label:
+                conditional_exits.add(pos)
             elif label.startswith("exit_"):
-                exits.add(pos)
+                normal_exits.add(pos)
 
-    # Player --- anchor tile from pixel centre
+    # Player --- anchor tile from vision pixel centre.
     if symbolic.player is not None:
         player: Position = symbolic.player.anchor_tile
+        player_center_px = symbolic.player.center_px
     else:
         player = (4, 4)
-
+        player_center_px = None
     # Monsters --- one anchor tile per dynamic entity
     monsters: set[Position] = set()
     for monster in symbolic.monsters:
         monsters.add(monster.anchor_tile)
 
     # Clean up overlaps
-    exits = exits - walls - chests - traps
+    normal_exits = normal_exits - walls - chests - traps
+    locked_exits = locked_exits - walls - chests - traps
+    conditional_exits = conditional_exits - walls - chests - traps
 
     keys, has_sword, has_shield, health = _inventory(info, memory)
 
     return SymbolicState(
         player=player,
+        player_center_px=player_center_px,
         room=memory.room,
         walls=walls,
         chests=chests,
         monsters=monsters,
-        exits=exits,
+        normal_exits=normal_exits,
+        locked_exits=locked_exits,
+        conditional_exits=conditional_exits,
         traps=traps,
         buttons=buttons,
         switches=switches,
@@ -126,18 +141,17 @@ def _map_frame(obs: Any) -> np.ndarray:
 def _inventory(
     info: dict[str, Any] | None, memory: AgentMemory
 ) -> tuple[int, bool, bool, int | None]:
-    keys = memory.previous_keys
+    keys = 0
     has_sword = memory.has_sword
     has_shield = memory.has_shield
     health: int | None = None
     if isinstance(info, dict):
         inventory = info.get("inventory", {})
         if isinstance(inventory, dict):
-            if "keys" in inventory:
-                try:
-                    keys = max(0, int(inventory["keys"]) - memory.spent_keys)
-                except (TypeError, ValueError):
-                    pass
+            try:
+                keys = max(0, int(inventory.get("keys", 0)))
+            except (TypeError, ValueError):
+                pass
             equipped = inventory.get("equipped", {})
             items = inventory.get("items", [])
             text = f"{equipped} {items}".lower()

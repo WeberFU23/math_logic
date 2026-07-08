@@ -59,31 +59,42 @@ class AdvancedPerceptor:
         self.last_frame = frame
 
         positions: dict[str, set[Position]] = {}
-        exits: set[Position] = set()
+        normal_exits: set[Position] = set()
+        locked_exits_set: set[Position] = set()
+        conditional_exits: set[Position] = set()
         exit_labels: dict[Position, str] = {}
         for row in range(frame.static.shape[0]):
             for col in range(frame.static.shape[1]):
                 label = str(frame.static[row, col])
                 positions.setdefault(label, set()).add((col, row))
                 if label.startswith("exit_"):
-                    exits.add((col, row))
                     exit_labels[(col, row)] = label
+                    if "locked_key" in label:
+                        locked_exits_set.add((col, row))
+                    elif "conditional" in label:
+                        conditional_exits.add((col, row))
+                    else:
+                        normal_exits.add((col, row))
 
         player = frame.player.anchor_tile if frame.player is not None else self._fallback_player()
         if frame.player is not None:
             self.last_player = player
+        player_center_px = frame.player.center_px if frame.player is not None else None
         player_position_px = self._player_position_px(frame)
         monsters = {entity.anchor_tile for entity in frame.monsters}
         keys, gold, has_sword, has_shield, has_heal = _allowed_inventory(info)
 
         return SymbolicState(
             player=player,
+            player_center_px=player_center_px,
             player_position_px=player_position_px,
             room=self.memory.room,
             walls=set(positions.get(WALL, set())),
             chests=set(positions.get(CHEST, set())),
             monsters=monsters,
-            exits=exits,
+            normal_exits=normal_exits,
+            locked_exits=locked_exits_set,
+            conditional_exits=conditional_exits,
             traps=set(positions.get(TRAP, set())) | set(positions.get(ABYSS, set())),
             # Include pressed variants — some mechanisms are reusable
             # (e.g. the rotating bridge switch in task 4 needs multiple

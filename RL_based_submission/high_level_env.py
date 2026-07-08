@@ -16,6 +16,7 @@ from RL_based_submission.high_level_core import (
     HighLevelAction,
     encode_high_level_state,
     oriented_action_for_goal,
+    unstick_nudge,
 )
 from rule_based_submission.shield import shield
 from rule_based_submission.symbolic import (
@@ -40,7 +41,7 @@ EVENT_BONUSES = {
     "chest_opened": 1.5,
     "key_collected": 4.0,
     "item_collected": 4.0,
-    "monster_killed": 4.0,
+    "monster_killed": 0.5,
     # Mechanisms are intermediate topology changes, not repeatable progress.
     # Their official reward remains (scaled by base_reward_scale), while the
     # valuable consequences they unlock are rewarded below.
@@ -105,6 +106,8 @@ class HighLevelOptionEnv(gym.Env):
         self.last_info: dict[str, Any] = {}
         self.last_option: int | None = None
         self.macro_steps = 0
+        self.blocked_action: int | None = None
+        self.bypass_alignment_once = False
 
     @property
     def memory(self):
@@ -116,9 +119,20 @@ class HighLevelOptionEnv(gym.Env):
         self.perceptor.reset(task_id=self.task_id)
         self.last_option = None
         self.macro_steps = 0
+        self.blocked_action = None
+        self.bypass_alignment_once = False
         obs, info = self.env.reset(seed=effective_seed)
         self.last_obs = np.asarray(obs)
         self.last_info = info
+        # Set the initial room coordinate from the game info so that all
+        # subsequent used_exits / room_memory global positions are consistent
+        # with the actual dungeon coordinate system.
+        if isinstance(info, dict):
+            env_info = info.get("env", {})
+            if isinstance(env_info, dict):
+                raw = env_info.get("room_coord")
+                if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                    self.memory.room = (int(raw[0]), int(raw[1]))
         self.state = self.perceptor.perceive(obs, info)
         self.memory.update(self.state)
         return self._encoded(), self._public_info(info)
@@ -142,13 +156,31 @@ class HighLevelOptionEnv(gym.Env):
         if goal is None:
             goal = Goal(kind=self._wait_kind())
 
-        raw_action, facing_only = oriented_action_for_goal(start_state, goal, self.memory)
+        raw_action, facing_only = oriented_action_for_goal(
+            start_state,
+            goal,
+            self.memory,
+            skip_alignment=self.bypass_alignment_once,
+        )
+        self.bypass_alignment_once = False
+        nudge_action = (
+            unstick_nudge(start_state, self.blocked_action)
+            if self.blocked_action == raw_action
+            else None
+        )
+        if nudge_action is not None:
+            raw_action = nudge_action
+            facing_only = True
+            self.blocked_action = None
+            self.bypass_alignment_once = True
         primitive_action = raw_action if facing_only else shield(raw_action, start_state)
         leaving_attempt = self._leaving_attempt(start_state, primitive_action)
         transition_possible = self._transition_possible(start_state.player, primitive_action)
         repeats = 1
         if primitive_action in MOVE_DELTAS and not facing_only:
             repeats = 24 if leaving_attempt else 16
+        elif primitive_action in MOVE_DELTAS and nudge_action is not None:
+            repeats = 4
 
         base_reward = 0.0
         events: Counter[str] = Counter()
@@ -177,6 +209,12 @@ class HighLevelOptionEnv(gym.Env):
         if primitive_action in MOVE_DELTAS:
             self.memory.facing_action = primitive_action
         next_state = self.perceptor.perceive(obs, info)
+        if primitive_action in MOVE_DELTAS and nudge_action is None:
+            before_px = start_state.player_position_px
+            after_px = next_state.player_position_px
+            if before_px is not None and after_px is not None:
+                moved = abs(before_px[0] - after_px[0]) + abs(before_px[1] - after_px[1])
+                self.blocked_action = primitive_action if moved < 0.5 else None
         # Use game info as ground truth; fall back to visual heuristic only when
         # the game flag was never set (e.g. the transition completed before any
         # step in *this* macro action, or the info dict was unavailable).
@@ -286,7 +324,7 @@ class HighLevelOptionEnv(gym.Env):
         return float(reward)
 
     def _leaving_attempt(self, state: SymbolicState, action: int) -> bool:
-        if action not in MOVE_DELTAS or state.player not in state.exits:
+        if action not in MOVE_DELTAS or state.player not in state.all_exits:
             return False
         candidate = next_position(state.player, action)
         return not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)

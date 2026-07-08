@@ -20,6 +20,7 @@ from rule_based_submission.symbolic import (
     globalize,
     manhattan,
     action_from_step,
+    next_position,
 )
 
 
@@ -41,10 +42,41 @@ ACTION_COUNT = len(HighLevelAction)
 FEATURE_DIM = 115
 
 
+def unstick_nudge(state: SymbolicState, blocked_action: int) -> int | None:
+    """Choose a short perpendicular pixel nudge after a visually stalled move."""
+
+    col, row = state.player
+    blockers = state.walls | state.npcs | state.chests | state.monsters
+    if blocked_action in {ACTION_UP, ACTION_DOWN}:
+        next_row = row - 1 if blocked_action == ACTION_UP else row + 1
+        if (col + 1, row) in blockers or (col + 1, next_row) in blockers:
+            return ACTION_LEFT
+        if (col - 1, row) in blockers or (col - 1, next_row) in blockers:
+            return ACTION_RIGHT
+        candidates = (ACTION_LEFT, ACTION_RIGHT)
+    elif blocked_action in {ACTION_LEFT, ACTION_RIGHT}:
+        next_col = col - 1 if blocked_action == ACTION_LEFT else col + 1
+        if (col, row + 1) in blockers or (next_col, row + 1) in blockers:
+            return ACTION_UP
+        if (col, row - 1) in blockers or (next_col, row - 1) in blockers:
+            return ACTION_DOWN
+        candidates = (ACTION_UP, ACTION_DOWN)
+    else:
+        return None
+
+    for candidate in candidates:
+        target = next_position(state.player, candidate)
+        if 0 <= target[0] < GRID_WIDTH and 0 <= target[1] < GRID_HEIGHT and target not in blockers:
+            return candidate
+    return None
+
+
 def oriented_action_for_goal(
     state: SymbolicState,
     goal: Goal,
     memory: AgentMemory,
+    *,
+    skip_alignment: bool = False,
 ) -> tuple[int, bool]:
     """Return a primitive action and whether it is a one-pixel setup step.
 
@@ -73,6 +105,8 @@ def oriented_action_for_goal(
     # _alignment_action can suggest DOWN/UP even though the neighbouring
     # tile in that direction is solid).
     if goal.kind == GoalKind.GO_TO_EXIT and state.player == goal.target:
+        return action, False
+    if skip_alignment:
         return action, False
     alignment = _alignment_action(state, action)
     if alignment is not None:
@@ -125,6 +159,13 @@ class GoalResolver:
         # because its opened chest is filtered out by resolve()).
         elif local_progress:
             mask[int(HighLevelAction.RETURN_OR_REVISIT)] = False
+
+        # Monsters are only obstacles, not objectives.  When there are chests or
+        # mechanisms in the room, force the policy to deal with them first.
+        # Combat reflex handles safety during movement so the agent never needs
+        # to proactively hunt monsters.
+        if mask[int(HighLevelAction.OPEN_CHEST)] or mask[int(HighLevelAction.ACTIVATE_MECHANISM)]:
+            mask[int(HighLevelAction.ATTACK_MONSTER)] = False
 
         # EXPLORE and WAIT are recovery actions, not alternatives to known
         # progress.  Leaving them enabled beside a chest, monster, mechanism,
@@ -282,7 +323,7 @@ class GoalResolver:
     def _door_exits(self, state: SymbolicState) -> set[tuple[int, int]]:
         return {
             (col, row)
-            for col, row in state.exits
+            for col, row in state.all_exits
             if (row in {0, 7} and col in {4, 5})
             or (col in {0, 9} and row in {3, 4})
         }
@@ -316,7 +357,7 @@ class GoalResolver:
         for row in range(GRID_HEIGHT):
             for col in range(GRID_WIDTH):
                 pos = (col, row)
-                if pos == state.player or pos in blockers or pos in state.exits:
+                if pos == state.player or pos in blockers or pos in state.all_exits:
                     continue
                 path = bfs_path(state, {pos})
                 if path is not None:
@@ -340,7 +381,7 @@ def encode_high_level_state(
     _fill(grid, state.walls, 1)
     _fill(grid, state.chests, 2)
     _fill(grid, state.monsters, 3)
-    _fill(grid, state.exits, 4)
+    _fill(grid, state.all_exits, 4)
     _fill(grid, state.traps, 5)
     _fill(grid, state.buttons | state.switches, 6)
     _fill(grid, state.gaps, 7)
