@@ -10,20 +10,19 @@ from gymnasium import spaces
 from nesylink.env import make_env
 from RL_based_submission.advanced_perception import AdvancedPerceptor
 from RL_based_submission.high_level_core import (
-    ACTION_COUNT,
-    FEATURE_DIM,
     GoalResolver,
-    HighLevelAction,
     encode_high_level_state,
     oriented_action_for_goal,
     unstick_nudge,
     task5_defensive_action,
 )
+from RL_based_submission.task5_learning import Task5GoalResolver, encode_task5_state
 from rule_based_submission.shield import shield
 from rule_based_submission.symbolic import (
     ACTION_NOOP,
     MOVE_DELTAS,
     Goal,
+    GoalKind,
     SymbolicState,
     globalize,
     next_position,
@@ -40,7 +39,7 @@ TASK_MAX_MACRO_STEPS = {
 }
 
 EVENT_BONUSES = {
-    "chest_opened": 3.0,       # chests are the main source of keys/healing/gold
+    "chest_opened": 3.0,
     "key_collected": 4.0,
     "item_collected": 4.0,
     "monster_killed": 0.5,
@@ -57,7 +56,19 @@ EVENT_BONUSES = {
     "door_opened": 3.0,
     "exit_reached": 0.0,
     "gold_collected": 0.5,
-    "agent_healed": 3.0,        # critical for surviving drain pressure in task 5
+    "agent_healed": 3.0,
+}
+
+TASK5_EVENT_BONUSES = {
+    **EVENT_BONUSES,
+    "chest_opened": 4.0,
+    "key_collected": 8.0,
+    # Cancel the official combat incentive: combat becomes worthwhile only
+    # when it enables later progress.
+    "monster_damaged": -0.5,
+    "monster_killed": -1.0,
+    "button_pressed": 4.0,
+    "agent_healed": 6.0,
 }
 
 
@@ -80,11 +91,18 @@ class HighLevelOptionEnv(gym.Env):
         render_mode: str | None = None,
         max_macro_steps: int | None = None,
         base_reward_scale: float = 0.1,
+        training_drain_interval: int | None = None,
     ) -> None:
         super().__init__()
         self.task_id = task_id
         self.seed_value = seed
         self.base_reward_scale = float(base_reward_scale)
+        if training_drain_interval is not None and task_id == "mathematical_logic/task_5":
+            # Training-only curriculum knob.  Final evaluation constructs this
+            # environment without it and therefore always uses the official
+            # 180-step interval.
+            from nesylink.rewards.mathematical_logic import task_5 as task5_reward
+            task5_reward._DRAIN_INTERVAL = int(training_drain_interval)
         self.max_macro_steps = int(
             max_macro_steps or TASK_MAX_MACRO_STEPS.get(task_id, 256)
         )
@@ -94,15 +112,19 @@ class HighLevelOptionEnv(gym.Env):
             render_mode=render_mode,
             action_repeat=1,
         )
-        self.action_space = spaces.Discrete(ACTION_COUNT)
+        self.resolver = (
+            Task5GoalResolver()
+            if task_id == "mathematical_logic/task_5"
+            else GoalResolver()
+        )
+        self.action_space = spaces.Discrete(self.resolver.action_count)
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(FEATURE_DIM,),
+            shape=(self.resolver.feature_dim,),
             dtype=np.float32,
         )
         self.perceptor = AdvancedPerceptor()
-        self.resolver = GoalResolver()
         self.state: SymbolicState | None = None
         self.last_obs: np.ndarray | None = None
         self.last_info: dict[str, Any] = {}
@@ -111,6 +133,7 @@ class HighLevelOptionEnv(gym.Env):
         self.blocked_action: int | None = None
         self.bypass_alignment_once = False
         self.defense_cooldown = 0
+        self.primitive_steps_total = 0
 
     @property
     def memory(self):
@@ -125,6 +148,7 @@ class HighLevelOptionEnv(gym.Env):
         self.blocked_action = None
         self.bypass_alignment_once = False
         self.defense_cooldown = 0
+        self.primitive_steps_total = 0
         obs, info = self.env.reset(seed=effective_seed)
         self.last_obs = np.asarray(obs)
         self.last_info = info
@@ -157,6 +181,29 @@ class HighLevelOptionEnv(gym.Env):
         start_state = self.state
         goal = self.resolver.resolve(action, start_state, self.memory)
         invalid_option = goal is None
+        task5_attack_progress = bool(
+            self.task_id == "mathematical_logic/task_5"
+            and self.resolver.is_attack(int(action))
+            and hasattr(self.resolver, "attack_is_progress")
+            and self.resolver.attack_is_progress(start_state, self.memory)
+        )
+        task5_selected_conditional_exit = bool(
+            self.task_id == "mathematical_logic/task_5"
+            and goal is not None
+            and goal.kind == GoalKind.GO_TO_EXIT
+            and goal.target in start_state.conditional_exits
+        )
+        task5_ignored_conditional_exit = bool(
+            self.task_id == "mathematical_logic/task_5"
+            and goal is not None
+            and goal.kind == GoalKind.GO_TO_EXIT
+            and goal.target not in start_state.conditional_exits
+            and any(
+                pos in start_state.conditional_exits
+                and globalize(start_state.room, pos) not in self.memory.used_exits
+                for pos in start_state.all_exits
+            )
+        )
         if goal is None:
             goal = Goal(kind=self._wait_kind())
 
@@ -164,7 +211,7 @@ class HighLevelOptionEnv(gym.Env):
             self.defense_cooldown -= 1
         defensive_action = (
             None
-            if int(action) == int(HighLevelAction.ATTACK_MONSTER) or self.defense_cooldown > 0
+            if self.resolver.is_attack(int(action)) or self.defense_cooldown > 0
             else task5_defensive_action(start_state, self.memory)
         )
         if defensive_action is not None:
@@ -201,9 +248,9 @@ class HighLevelOptionEnv(gym.Env):
                 1 if leaving_attempt and self.task_id == "mathematical_logic/task_5"
                 else 24 if leaving_attempt
                 else
-                1 if self.task_id == "mathematical_logic/task_5" and start_state.monsters
+                2 if self.task_id == "mathematical_logic/task_5" and start_state.monsters
                 and min(manhattan(start_state.player, monster) for monster in start_state.monsters) <= 3
-                else 4 if self.task_id == "mathematical_logic/task_5"
+                else 8 if self.task_id == "mathematical_logic/task_5"
                 else 16
             )
         elif primitive_action in MOVE_DELTAS and nudge_action is not None:
@@ -226,6 +273,7 @@ class HighLevelOptionEnv(gym.Env):
                 room_changed_via_game = True
             if terminated or truncated:
                 break
+        self.primitive_steps_total += primitive_steps
 
         # A room change requires clean static visual memory.  Use both the
         # pre-move heuristic and the ground-truth game flag so that vision is
@@ -275,10 +323,13 @@ class HighLevelOptionEnv(gym.Env):
             terminated=terminated,
             discovered_exit=discovered_exit,
             room_changed=room_changed,
+            task5_attack_progress=task5_attack_progress,
+            task5_selected_conditional_exit=task5_selected_conditional_exit,
+            task5_ignored_conditional_exit=task5_ignored_conditional_exit,
         )
         public_info = self._public_info(info)
         public_info["high_level"] = {
-            "option": HighLevelAction(int(action)).name,
+            "option": self.resolver.action_name(int(action)),
             "goal": goal.kind.value,
             "target": goal.target,
             "primitive_action": primitive_action,
@@ -301,6 +352,15 @@ class HighLevelOptionEnv(gym.Env):
             raise RuntimeError("no state available")
         mask = self.resolver.action_mask(self.state, self.memory)
         inventory = self.perceptor.inventory_features(self.last_info)
+        if self.task_id == "mathematical_logic/task_5":
+            return encode_task5_state(
+                self.state,
+                self.memory,
+                inventory=inventory,
+                action_mask=mask,
+                last_option=self.last_option,
+                elapsed_steps=self.primitive_steps_total,
+            )
         return encode_high_level_state(
             self.state,
             self.memory,
@@ -319,6 +379,9 @@ class HighLevelOptionEnv(gym.Env):
         terminated: bool,
         discovered_exit: bool,
         room_changed: bool,
+        task5_attack_progress: bool,
+        task5_selected_conditional_exit: bool,
+        task5_ignored_conditional_exit: bool,
     ) -> float:
         reward = self.base_reward_scale * base_reward - 0.02
         if room_changed and not discovered_exit:
@@ -333,8 +396,21 @@ class HighLevelOptionEnv(gym.Env):
         effective_attacks = events.get("monster_damaged", 0) + events.get("monster_killed", 0)
         if ineffective_attacks > 0 and effective_attacks <= 0:
             reward -= 0.15 * ineffective_attacks
+        if self.task_id == "mathematical_logic/task_5" and effective_attacks > 0:
+            if task5_attack_progress:
+                reward += 2.0 * effective_attacks
+            else:
+                reward -= 3.0 * effective_attacks
+        bonuses = TASK5_EVENT_BONUSES if self.task_id == "mathematical_logic/task_5" else EVENT_BONUSES
         for name, count in events.items():
-            reward += EVENT_BONUSES.get(name, 0.0) * count
+            reward += bonuses.get(name, 0.0) * count
+        if self.task_id == "mathematical_logic/task_5":
+            if task5_selected_conditional_exit and room_changed:
+                reward += 5.0
+            elif task5_selected_conditional_exit:
+                reward += 0.1
+            if task5_ignored_conditional_exit:
+                reward -= 0.4
         # HP-aware healing: low HP → healing is worth more.  Teaches the policy
         # to seek healing chests when running low on health (critical under the
         # task-5 drain mechanic where the model cannot see HP in its features).
@@ -354,9 +430,9 @@ class HighLevelOptionEnv(gym.Env):
             else False
         ) or reason == "world_completed"
         if completed:
-            reward += 25.0
+            reward += 50.0 if self.task_id == "mathematical_logic/task_5" else 25.0
         elif terminated and reason == "agent_dead":
-            reward -= 15.0
+            reward -= 30.0 if self.task_id == "mathematical_logic/task_5" else 15.0
         return float(reward)
 
     def _leaving_attempt(self, state: SymbolicState, action: int) -> bool:

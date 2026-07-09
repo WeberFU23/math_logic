@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--task5-drain-interval",
+        type=int,
+        default=None,
+        help="Training-only Task-5 curriculum interval; evaluation remains 180.",
+    )
     return parser.parse_args()
 
 
@@ -80,6 +86,7 @@ def main() -> None:
             model_dir=args.model_dir,
             log_dir=args.log_dir,
             resume=args.resume,
+            task5_drain_interval=args.task5_drain_interval,
         )
 
 
@@ -96,6 +103,7 @@ def train_task(
     model_dir: Path,
     log_dir: Path,
     resume: bool,
+    task5_drain_interval: int | None,
 ) -> None:
     slug = task_id.replace("/", "_")
     model_path = model_dir / f"{slug}.zip"
@@ -105,7 +113,11 @@ def train_task(
         env_seed = seed + env_index
 
         def make_one(task=task_id, one_seed=env_seed):
-            return Monitor(HighLevelOptionEnv(task, seed=one_seed))
+            return Monitor(HighLevelOptionEnv(
+                task,
+                seed=one_seed,
+                training_drain_interval=task5_drain_interval,
+            ))
 
         factories.append(make_one)
 

@@ -8,12 +8,12 @@ import numpy as np
 from RL_based_submission.advanced_perception import AdvancedPerceptor
 from RL_based_submission.high_level_core import (
     GoalResolver,
-    HighLevelAction,
     encode_high_level_state,
     oriented_action_for_goal,
     unstick_nudge,
     task5_defensive_action,
 )
+from RL_based_submission.task5_learning import Task5GoalResolver, encode_task5_state
 from rule_based_submission.shield import combat_reflex, shield
 from rule_based_submission.symbolic import (
     ACTION_NOOP,
@@ -50,6 +50,7 @@ class Policy:
         self._blocked_action: int | None = None
         self._bypass_alignment_once = False
         self._defense_cooldown = 0
+        self._env_steps = 0
 
     @property
     def memory(self):
@@ -59,6 +60,11 @@ class Policy:
         del seed
         self.task_id = task_id
         self.perceptor.reset(task_id=task_id)
+        self.resolver = (
+            Task5GoalResolver()
+            if task_id == "mathematical_logic/task_5"
+            else GoalResolver()
+        )
         self.model = _load_model(task_id)
         self.last_option = None
         self._queued_action = ACTION_NOOP
@@ -69,10 +75,13 @@ class Policy:
         self._blocked_action = None
         self._bypass_alignment_once = False
         self._defense_cooldown = 0
+        self._env_steps = 0
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
+        elapsed_steps = self._env_steps
+        self._env_steps += 1
         if self._queued_ticks > 0:
-            state = self.perceptor.perceive(obs, info)
+            state = self._perceive_and_update(obs, info)
             urgent = combat_reflex(state, self.memory.facing_action,
                                    state.has_sword, state.has_shield)
             if urgent is not None:
@@ -90,10 +99,7 @@ class Policy:
         if self.model is None:
             return ACTION_NOOP
 
-        if self._transition_start is not None:
-            self.perceptor.reset_room_vision()
-
-        state = self.perceptor.perceive(obs, info)
+        state = self._perceive_and_update(obs, info)
         if self._queued_start_px is not None and state.player_position_px is not None:
             moved = (
                 abs(self._queued_start_px[0] - state.player_position_px[0])
@@ -101,24 +107,25 @@ class Policy:
             )
             self._blocked_action = self._queued_action if moved < 0.5 else None
         self._queued_start_px = None
-        if self._transition_start is not None:
-            start, transition_action = self._transition_start
-            if _transition_succeeded(start, state.player):
-                _mark_transition(
-                    self.memory,
-                    _transition_exit_pos(start, transition_action),
-                )
-            self._transition_start = None
-
-        self.memory.update(state)
-        self._state = state
         mask = self.resolver.action_mask(state, self.memory)
-        features = encode_high_level_state(
-            state,
-            self.memory,
-            inventory=self.perceptor.inventory_features(info),
-            action_mask=mask,
-            last_option=self.last_option,
+        inventory = self.perceptor.inventory_features(info)
+        features = (
+            encode_task5_state(
+                state,
+                self.memory,
+                inventory=inventory,
+                action_mask=mask,
+                last_option=self.last_option,
+                elapsed_steps=elapsed_steps,
+            )
+            if self.task_id == "mathematical_logic/task_5"
+            else encode_high_level_state(
+                state,
+                self.memory,
+                inventory=inventory,
+                action_mask=mask,
+                last_option=self.last_option,
+            )
         )
         option, _ = self.model.predict(
             features,
@@ -134,7 +141,7 @@ class Policy:
             self._defense_cooldown -= 1
         defensive_action = (
             None
-            if self.last_option == int(HighLevelAction.ATTACK_MONSTER) or self._defense_cooldown > 0
+            if self.resolver.is_attack(self.last_option) or self._defense_cooldown > 0
             else task5_defensive_action(state, self.memory)
         )
         if defensive_action is not None:
@@ -181,13 +188,13 @@ class Policy:
                 0 if leaving and self.task_id == "mathematical_logic/task_5"
                 else 23 if leaving
                 else
-                0 if self.task_id == "mathematical_logic/task_5" and state.monsters
+                1 if self.task_id == "mathematical_logic/task_5" and state.monsters
                 and min(
                     abs(state.player[0] - monster[0]) + abs(state.player[1] - monster[1])
                     for monster in state.monsters
                 ) <= 3
-                else 3 if self.task_id == "mathematical_logic/task_5"
-                else 15
+                else 7 if self.task_id == "mathematical_logic/task_5"
+                else self._move_queue_ticks(state)
             )
             self._queued_start_px = state.player_position_px
             if _transition_possible(state.player, action):
@@ -196,6 +203,70 @@ class Policy:
             self._queued_action = ACTION_NOOP
             self._queued_ticks = 0
         return action
+
+    def _perceive_and_update(self, obs: Any, info: dict[str, Any] | None) -> SymbolicState:
+        """Perceive a frame and update room memory after confirmed transitions.
+
+        The final policy repeats a chosen movement for several primitive game
+        steps.  A doorway crossing can therefore happen while we are still
+        inside that repeat queue.  We first perceive the current frame, then
+        mark a room transition only if the player visibly jumped from an exit
+        edge to the opposite entry side.  This uses pixels plus our own last
+        action; it does not read hidden room coordinates or object maps.
+        """
+
+        previous = self._state
+        previous_action = self._queued_action
+        state = self.perceptor.perceive(obs, info)
+        if previous is not None and previous_action in MOVE_DELTAS and (
+            (
+                self._is_leaving_current_room(previous, previous_action)
+                and _transition_succeeded(previous.player, state.player)
+            )
+            or (
+                self._transition_start is not None
+                and _transition_succeeded(self._transition_start[0], state.player)
+            )
+        ):
+            exit_start = (
+                self._transition_start[0]
+                if self._transition_start is not None
+                else previous.player
+            )
+            exit_action = (
+                self._transition_start[1]
+                if self._transition_start is not None
+                else previous_action
+            )
+            _mark_transition(
+                self.memory,
+                _transition_exit_pos(exit_start, exit_action),
+            )
+            self.perceptor.reset_room_vision()
+            state = self.perceptor.perceive(obs, info)
+            self._transition_start = None
+        self.memory.update(state)
+        self._state = state
+        return state
+
+    @staticmethod
+    def _is_leaving_current_room(state: SymbolicState, action: int) -> bool:
+        if action not in MOVE_DELTAS or state.player not in state.all_exits:
+            return False
+        candidate = next_position(state.player, action)
+        return not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
+
+    @staticmethod
+    def _move_queue_ticks(state: SymbolicState) -> int:
+        if not state.monsters:
+            return 15
+        nearest_monster = min(
+            abs(state.player[0] - monster[0]) + abs(state.player[1] - monster[1])
+            for monster in state.monsters
+        )
+        if nearest_monster <= 2:
+            return 1
+        return 3
 
 
 def _load_model(task_id: str | None):
