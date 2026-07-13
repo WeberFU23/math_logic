@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from rule_based_submission.planner import is_reachable, nearest
+from rule_based_submission.planner import bfs_path, is_reachable, nearest
 from rule_based_submission.symbolic import AgentMemory, Goal, GoalKind, Position, RoomCoord, SymbolicState, globalize, manhattan
 
 
@@ -42,6 +42,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         door_conditional = self._door_conditional(state)
         mechanisms = self._mechanisms(state)          # switches only
         has_cond_door = bool(door_conditional)
+        has_buttons = bool(state.buttons)
         have_key = state.keys > 0
 
         unopened_chests = {
@@ -61,7 +62,11 @@ class RuleBasedPolicy(HighLevelPolicy):
         } if has_cond_door else set[Position]()
         reachable_buttons = self._reachable_goals(state, GoalKind.ACTIVATE_SWITCH, unpressed)
 
-        cond_prereqs_met = has_cond_door and not unpressed and not live_monsters
+        cond_prereqs_met = (
+            has_cond_door
+            and not unpressed
+            and (has_buttons or not live_monsters)
+        )
 
         def _new(doors: set[Position]) -> set[Position]:
             return {p for p in doors if globalize(state.room, p) not in memory.used_exits}
@@ -77,6 +82,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         sticky = self._continue_last_goal(
             state, memory, unopened_chests, live_monsters, mechanisms,
             door_exits, door_locked, door_conditional, state.buttons,
+            cond_prereqs_met,
         )
         if sticky is not None:
             self._log(f"1.STICKY  -> {sticky.kind.value}:{sticky.target}")
@@ -113,8 +119,8 @@ class RuleBasedPolicy(HighLevelPolicy):
                 g = self._nearest_goal(state, reachable_buttons)
                 self._log(f"5.BUTTON_FOR_COND -> {g.target}")
                 return g
-            # buttons done but monsters remain: redirect to monsters
-            if not cond_prereqs_met and live_monsters and state.has_sword and self._safe_to_fight(state):
+            # Monster-gated conditional door: clear monsters only when no button exists.
+            if not has_buttons and live_monsters and state.has_sword and self._safe_to_fight(state):
                 if reachable_monsters:
                     g = self._nearest_goal(state, reachable_monsters)
                     self._log(f"5.MON_FOR_COND -> {g.target}")
@@ -154,8 +160,8 @@ class RuleBasedPolicy(HighLevelPolicy):
                 g = self._nearest_goal(state, reachable_buttons)
                 self._log(f"10.BUTTON_FOR_COND -> {g.target}")
                 return g
-            # buttons done but monsters remain — redirect to monsters
-            if not cond_prereqs_met and live_monsters and state.has_sword and self._safe_to_fight(state):
+            # Monster-gated conditional door: clear monsters only when no button exists.
+            if not has_buttons and live_monsters and state.has_sword and self._safe_to_fight(state):
                 if reachable_monsters:
                     g = self._nearest_goal(state, reachable_monsters)
                     self._log(f"10.MON_FOR_COND -> {g.target}")
@@ -196,6 +202,7 @@ class RuleBasedPolicy(HighLevelPolicy):
         door_locked: set[Position],
         door_conditional: set[Position],
         all_buttons: set[Position],
+        cond_prereqs_met: bool,
     ) -> Goal | None:
         goal = memory.last_goal
         if goal is None or goal.target is None:
@@ -228,7 +235,7 @@ class RuleBasedPolicy(HighLevelPolicy):
             if target in door_locked and state.keys <= 0:
                 return None
             # conditional exit with remaining buttons or monsters — ignore
-            if target in door_conditional and (state.buttons or live_monsters):
+            if target in door_conditional and not cond_prereqs_met:
                 return None
             # monsters still need clearing
             if self._must_clear_monsters_before_exit(state, memory, unopened_chests, door_exits, mechanisms):
@@ -356,10 +363,11 @@ class RuleBasedPolicy(HighLevelPolicy):
             unvisited = 0 if neighbor is not None and neighbor not in memory.room_memory else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
             blocked_approach = 1 if self._exit_approach_blocked(state, target) else 0
-            key_bonus = 0 if state.keys > 0 and target[0] == 9 else 1
             entry = 1 if self._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
+            path = bfs_path(state, {target})
+            distance = len(path) - 1 if path is not None else manhattan(state.player, target)
             return (used, blocked_approach, unvisited, entry,
-                    key_bonus + manhattan(state.player, target), target)
+                    distance, target)
 
         return min(candidates, key=rank)
 

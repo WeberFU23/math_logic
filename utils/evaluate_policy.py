@@ -19,11 +19,12 @@ import argparse
 import copy
 import importlib
 import importlib.util
+import inspect
 import json
 import shutil
 import sys
 import tempfile
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -170,7 +171,7 @@ def load_module(target: str):
     return importlib.import_module(target)
 
 
-def load_policy(policy_spec: str):
+def load_policy(policy_spec: str, *, debug: bool = False):
     target, attr = split_policy_spec(policy_spec)
     module = load_module(target)
 
@@ -180,13 +181,27 @@ def load_policy(policy_spec: str):
             continue
         candidate = getattr(module, name)
         if name == "make_policy":
-            return candidate()
+            return _instantiate_policy(candidate, debug=debug)
         if name == "Policy" and isinstance(candidate, type):
-            return candidate()
+            return _instantiate_policy(candidate, debug=debug)
         return candidate
 
     expected = ", ".join(candidate_names)
     raise AttributeError(f"policy module must expose one of: {expected}")
+
+
+def _instantiate_policy(factory: Callable[..., Any], *, debug: bool) -> Any:
+    if not debug:
+        return factory()
+    try:
+        parameters = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return factory()
+    accepts_debug = any(
+        parameter.name == "debug" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    return factory(debug=True) if accepts_debug else factory()
 
 
 def parse_task_policy_specs(specs: list[str] | None) -> dict[str, str]:
@@ -208,6 +223,7 @@ def resolve_policies(
     default_policy_spec: str | None,
     task_policy_specs: list[str] | None,
     task_ids: list[str],
+    debug: bool = False,
 ) -> dict[str, PolicyBinding]:
     task_policy_map = parse_task_policy_specs(task_policy_specs)
     missing_task_ids = [
@@ -221,14 +237,14 @@ def resolve_policies(
 
     loaded_by_spec: dict[str, Any] = {}
     if default_policy_spec is not None:
-        loaded_by_spec[default_policy_spec] = load_policy(default_policy_spec)
+        loaded_by_spec[default_policy_spec] = load_policy(default_policy_spec, debug=debug)
 
     policies: dict[str, PolicyBinding] = {}
     for task_id in task_ids:
         policy_spec = task_policy_map.get(task_id, default_policy_spec)
         assert policy_spec is not None
         if policy_spec not in loaded_by_spec:
-            loaded_by_spec[policy_spec] = load_policy(policy_spec)
+            loaded_by_spec[policy_spec] = load_policy(policy_spec, debug=debug)
         policies[task_id] = PolicyBinding(
             policy=loaded_by_spec[policy_spec],
             receives_task_id=task_id in task_policy_map,
@@ -742,11 +758,12 @@ def build_episode_plan(
     num_envs: int,
     obs_variants: list[str],
     robustness_suite: bool,
+    robustness_stages: list[str] | None = None,
 ) -> list[EpisodePlanEntry]:
     if num_envs < 1:
         raise ValueError("--num-envs must be >= 1")
 
-    if not robustness_suite:
+    if not robustness_suite and robustness_stages is None:
         return [
             EpisodePlanEntry(
                 task_id=task_id,
@@ -762,7 +779,13 @@ def build_episode_plan(
     color_variants = ["grayscale", "dark", "bright", "high_contrast", "inverted"]
     plan: list[EpisodePlanEntry] = []
     for task_id in task_ids:
-        original_count, spatial_count, color_count = _split_episode_counts(num_envs, (0.6, 0.3, 0.1))
+        if robustness_stages is None:
+            original_count, spatial_count, color_count = _split_episode_counts(num_envs, (0.6, 0.3, 0.1))
+        else:
+            selected_stages = set(robustness_stages)
+            original_count = num_envs if "original" in selected_stages else 0
+            spatial_count = num_envs if "spatial" in selected_stages else 0
+            color_count = num_envs if "color" in selected_stages else 0
 
         for episode_index in range(original_count):
             plan.append(
@@ -822,6 +845,10 @@ def run_episode(
     map_variant: str = "default",
     info_mode: str = "safe",
     policy_task_id: str | None = None,
+    replay_path: Path | None = None,
+    replay_stride: int = 4,
+    replay_fps: int = 12,
+    replay_failures_only: bool = False,
 ) -> EpisodeResult:
     env_kwargs: dict[str, Any] = {
         "observation_mode": "pixels",
@@ -856,6 +883,8 @@ def run_episode(
         last_reward=last_reward,
         task_id=policy_task_id,
     )
+    replay_frames: list[Any] = []
+    recent_events: deque[str] = deque(maxlen=5)
 
     try:
         while not (terminated or truncated):
@@ -867,15 +896,37 @@ def run_episode(
             steps += 1
             last_reward = float(reward)
             total_reward += last_reward
-            event_counter.update(event_names(raw_info))
+            names = event_names(raw_info)
+            event_counter.update(names)
+            recent_events.extend(names)
             policy_info = build_policy_info(
                 info_mode=info_mode,
                 raw_info=raw_info,
                 last_reward=last_reward,
                 task_id=policy_task_id,
             )
+            if replay_path is not None and (steps % replay_stride == 0 or terminated or truncated):
+                replay_frames.append(
+                    _make_replay_frame(
+                        obs,
+                        policy=policy,
+                        task_id=task_id,
+                        eval_stage=eval_stage,
+                        obs_variant=obs_variant,
+                        map_variant=map_variant,
+                        seed=seed,
+                        step=steps,
+                        action=action,
+                        total_reward=total_reward,
+                        recent_events=tuple(recent_events),
+                    )
+                )
     finally:
         env.close()
+
+    success = is_success(raw_info, terminated)
+    if replay_path is not None and (not replay_failures_only or not success):
+        _write_replay_gif(replay_frames, replay_path, fps=replay_fps)
 
     milestones = {
         name: event_counter.get(name, 0) > 0
@@ -890,12 +941,76 @@ def run_episode(
         total_reward=total_reward,
         terminated=bool(terminated),
         truncated=bool(truncated),
-        success=is_success(raw_info, terminated),
+        success=success,
         terminal_reason=raw_info.get("terminal_reason"),
         event_counts=dict(sorted(event_counter.items())),
         milestones=milestones,
         map_variant=map_variant,
     )
+
+def _make_replay_frame(
+    obs: Any,
+    *,
+    policy: Any,
+    task_id: str,
+    eval_stage: str,
+    obs_variant: str,
+    map_variant: str,
+    seed: int,
+    step: int,
+    action: int,
+    total_reward: float,
+    recent_events: tuple[str, ...],
+) -> Any:
+    from PIL import Image, ImageDraw, ImageFont
+
+    array = np.asarray(obs)
+    if array.ndim != 3 or array.shape[-1] != 3:
+        raise ValueError(f"expected RGB observation for replay, got shape {array.shape}")
+    frame = Image.fromarray(array.astype(np.uint8), mode="RGB")
+    frame = frame.resize((frame.width * 2, frame.height * 2), Image.Resampling.NEAREST)
+    canvas = Image.new("RGB", (frame.width, frame.height + 70), (20, 22, 30))
+    canvas.paste(frame, (0, 0))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    memory = getattr(policy, "memory", None)
+    goal = getattr(memory, "last_goal", None)
+    if goal is None:
+        goal_text = "-"
+    else:
+        goal_kind = getattr(goal, "kind", "?")
+        goal_kind = getattr(goal_kind, "value", goal_kind)
+        goal_text = f"{goal_kind}:{getattr(goal, 'target', '?')}"
+    room = getattr(memory, "room", "-")
+    events = ", ".join(recent_events[-3:]) if recent_events else "-"
+    lines = (
+        f"{task_id}  stage={eval_stage}  seed={seed}",
+        f"obs={obs_variant}  map={map_variant}",
+        f"step={step}  action={action}  reward={total_reward:.2f}",
+        f"room={room}  goal={goal_text}",
+        f"events={events}",
+    )
+    y = frame.height + 4
+    for line in lines:
+        draw.text((4, y), line, fill=(235, 239, 245), font=font)
+        y += 13
+    return canvas
+
+
+def _write_replay_gif(frames: list[Any], path: Path, *, fps: int) -> None:
+    if not frames:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    duration_ms = max(1, round(1000 / fps))
+    frames[0].save(
+        path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+    print(f"  replay: {path}")
 
 
 def materialize_spatial_map_variant(task_id: str, variant: str, *, seed: int) -> Path:
@@ -1266,6 +1381,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-repeat", type=int, default=None, help="Override task action_repeat during evaluation.")
     parser.add_argument("--render-mode", default=None, choices=["rgb_array"], help="Optional render mode.")
     parser.add_argument(
+        "--debug-policy",
+        action="store_true",
+        help="Enable policy decision logs when its factory accepts debug=True.",
+    )
+    parser.add_argument(
         "--info-mode",
         choices=["safe", "full"],
         default="safe",
@@ -1286,6 +1406,34 @@ def parse_args() -> argparse.Namespace:
             "30%% spatial map perturbation episodes, and 10%% color-shift episodes."
         ),
     )
+    parser.add_argument(
+        "--robustness-stages",
+        nargs="+",
+        choices=["original", "spatial", "color"],
+        default=None,
+        help=(
+            "Run only selected robustness stages; this enables robustness mode. "
+            "--num-envs episodes are run for each selected stage."
+        ),
+    )
+    parser.add_argument(
+        "--visualize-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for per-episode GIF replays.",
+    )
+    parser.add_argument(
+        "--visualize-stride",
+        type=int,
+        default=4,
+        help="Capture one replay frame every N environment steps.",
+    )
+    parser.add_argument("--visualize-fps", type=int, default=12, help="Replay GIF frame rate.")
+    parser.add_argument(
+        "--visualize-failures-only",
+        action="store_true",
+        help="Save replay GIFs only for failed episodes.",
+    )
     parser.add_argument("--json-out", type=Path, default=None, help="Optional path for detailed JSON results.")
     return parser.parse_args()
 
@@ -1296,11 +1444,16 @@ def main() -> None:
         raise ValueError("--num-envs must be >= 1")
     if args.action_repeat is not None and args.action_repeat < 1:
         raise ValueError("--action-repeat must be >= 1")
+    if args.visualize_stride < 1:
+        raise ValueError("--visualize-stride must be >= 1")
+    if args.visualize_fps < 1:
+        raise ValueError("--visualize-fps must be >= 1")
 
     policy_bindings_by_task = resolve_policies(
         default_policy_spec=args.policy,
         task_policy_specs=args.task_policy,
         task_ids=args.tasks,
+        debug=args.debug_policy,
     )
     results: list[EpisodeResult] = []
     episode_plan = build_episode_plan(
@@ -1309,9 +1462,18 @@ def main() -> None:
         num_envs=args.num_envs,
         obs_variants=args.obs_variants,
         robustness_suite=args.robustness_suite,
+        robustness_stages=args.robustness_stages,
     )
     for entry in episode_plan:
         policy_binding = policy_bindings_by_task[entry.task_id]
+        replay_path = None
+        if args.visualize_dir is not None:
+            task_name = entry.task_id.replace("/", "_")
+            replay_name = (
+                f"{entry.eval_stage}__{entry.map_variant}__{entry.obs_variant}"
+                f"__seed_{entry.seed}.gif"
+            )
+            replay_path = args.visualize_dir / task_name / replay_name
         result = run_episode(
             policy=policy_binding.policy,
             task_id=entry.task_id,
@@ -1324,6 +1486,10 @@ def main() -> None:
             map_variant=entry.map_variant,
             info_mode=args.info_mode,
             policy_task_id=entry.task_id if policy_binding.receives_task_id else None,
+            replay_path=replay_path,
+            replay_stride=args.visualize_stride,
+            replay_fps=args.visualize_fps,
+            replay_failures_only=args.visualize_failures_only,
         )
         results.append(result)
         print(

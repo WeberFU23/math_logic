@@ -64,11 +64,8 @@ class Policy:
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
                 self._log(f"QUEUE INTERRUPT reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
-                if urgent_action == ACTION_A:
-                    self._force_fight_ticks = 240
                 self._queued_ticks -= 1
-                self.memory.last_action = urgent_action
-                return urgent_action
+                return self._commit_urgent_action(urgent_action)
             self._queued_ticks -= 1
             self.memory.last_action = self._queued_action
             self._facing = self._queued_action
@@ -80,10 +77,7 @@ class Policy:
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
-            if urgent_action == ACTION_A:
-                self._force_fight_ticks = 240
-            self.memory.last_action = urgent_action
-            return urgent_action
+            return self._commit_urgent_action(urgent_action)
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
         raw_action = action_for_goal(state, goal)
         unstick_nudge = False
@@ -96,11 +90,15 @@ class Policy:
                 pixel_nudge = True
             unstick_nudge = adjusted_action != raw_action
             raw_action = adjusted_action
-        align_action = self._alignment_action(state, raw_action)
-        if align_action is not None:
-            pixel_nudge = True
-            raw_action = align_action
-        action = shield(raw_action, state)
+        else:
+            align_action = self._alignment_action(state, raw_action)
+            if align_action is not None:
+                pixel_nudge = True
+                raw_action = align_action
+        # Alignment nudges stay within the current tile for one pixel tick.
+        # A tile-level shield would incorrectly reject them when a corridor
+        # has walls immediately on both sides.
+        action = raw_action if pixel_nudge else shield(raw_action, state)
         if action in MOVE_DELTAS:
             candidate = next_position(state.player, action)
             leaving_through_exit = self._is_door_exit(state.player) and state.player in state.all_exits and not (0 <= candidate[0] < 10 and 0 <= candidate[1] < 8)
@@ -128,6 +126,15 @@ class Policy:
         ACTION_NOOP: "NOOP", ACTION_UP: "UP", ACTION_DOWN: "DOWN",
         ACTION_LEFT: "LEFT", ACTION_RIGHT: "RIGHT", ACTION_A: "A", ACTION_B: "B",
     }
+
+    def _commit_urgent_action(self, action: int) -> int:
+        """Commit a combat-reflex action and keep internal facing consistent."""
+        if action == ACTION_A:
+            self._force_fight_ticks = 240
+        if action in MOVE_DELTAS:
+            self._facing = action
+        self.memory.last_action = action
+        return action
 
     def _observe_motion(self, state: SymbolicState) -> None:
         """Infer blocked movement from successive player pixels, without debug info."""
@@ -192,33 +199,45 @@ class Policy:
 
         if action in {ACTION_UP, ACTION_DOWN}:
             forward_row = row + (-1 if action == ACTION_UP else 1)
-            left_front_blocked = not is_walkable((col - 1, forward_row), state, allow_goal=True)
-            right_front_blocked = not is_walkable((col + 1, forward_row), state, allow_goal=True)
+            left_front_blocked = any(
+                not is_walkable(pos, state, allow_goal=True)
+                for pos in ((col - 1, row), (col - 1, forward_row))
+            )
+            right_front_blocked = any(
+                not is_walkable(pos, state, allow_goal=True)
+                for pos in ((col + 1, row), (col + 1, forward_row))
+            )
             if left_front_blocked and right_front_blocked:
-                if center_x < target_x - center_tolerance and self._can_step(state, ACTION_RIGHT):
+                if center_x < target_x - center_tolerance:
                     return ACTION_RIGHT
-                if center_x > target_x + center_tolerance and self._can_step(state, ACTION_LEFT):
+                if center_x > target_x + center_tolerance:
                     return ACTION_LEFT
             elif left_front_blocked:
-                if center_x < target_x + corner_margin and self._can_step(state, ACTION_RIGHT):
+                if center_x < target_x + corner_margin:
                     return ACTION_RIGHT
             elif right_front_blocked:
-                if center_x > target_x - corner_margin and self._can_step(state, ACTION_LEFT):
+                if center_x > target_x - corner_margin:
                     return ACTION_LEFT
         elif action in {ACTION_LEFT, ACTION_RIGHT}:
             forward_col = col + (-1 if action == ACTION_LEFT else 1)
-            up_front_blocked = not is_walkable((forward_col, row - 1), state, allow_goal=True)
-            down_front_blocked = not is_walkable((forward_col, row + 1), state, allow_goal=True)
+            up_front_blocked = any(
+                not is_walkable(pos, state, allow_goal=True)
+                for pos in ((col, row - 1), (forward_col, row - 1))
+            )
+            down_front_blocked = any(
+                not is_walkable(pos, state, allow_goal=True)
+                for pos in ((col, row + 1), (forward_col, row + 1))
+            )
             if up_front_blocked and down_front_blocked:
-                if center_y < target_y - center_tolerance and self._can_step(state, ACTION_DOWN):
+                if center_y < target_y - center_tolerance:
                     return ACTION_DOWN
-                if center_y > target_y + center_tolerance and self._can_step(state, ACTION_UP):
+                if center_y > target_y + center_tolerance:
                     return ACTION_UP
             elif up_front_blocked:
-                if center_y < target_y + corner_margin and self._can_step(state, ACTION_DOWN):
+                if center_y < target_y + corner_margin:
                     return ACTION_DOWN
             elif down_front_blocked:
-                if center_y > target_y - corner_margin and self._can_step(state, ACTION_UP):
+                if center_y > target_y - corner_margin:
                     return ACTION_UP
         return None
     def _unstick_action(self, state: SymbolicState, goal: Goal, blocked_action: int) -> int:
@@ -321,17 +340,15 @@ class Policy:
 
         # -- cardinal adjacent (manhattan == 1) -------------------------
         if m_dist == 1:
-            # facing the monster: attack
-            if state.has_sword and self._is_facing(state.player, target):
-                return ACTION_A
-            # not facing: step back to create distance, then re-approach
-            retreat = self._step_away(state, target)
-            if retreat is not None:
-                return retreat
-            # can't step back: shield as last resort to push monster away
+            if state.has_sword:
+                if self._is_facing(state.player, target):
+                    return ACTION_A
+                # Turn toward the adjacent monster without retreating. The
+                # movement may be collision-blocked, but it still updates facing.
+                return self._turn_toward(state.player, target)
             if state.has_shield:
                 return ACTION_B
-            return None
+            return self._step_away(state, target)
 
         # -- diagonal adjacent (manhattan == 2, euclidean < 1.5) --------
         if state.has_sword:
@@ -341,6 +358,14 @@ class Policy:
         if state.has_shield:
             return ACTION_B
         return None
+
+    @staticmethod
+    def _turn_toward(player: Position, target: Position) -> int:
+        dx = target[0] - player[0]
+        dy = target[1] - player[1]
+        if abs(dx) >= abs(dy) and dx != 0:
+            return ACTION_RIGHT if dx > 0 else ACTION_LEFT
+        return ACTION_DOWN if dy > 0 else ACTION_UP
 
     def _step_away(self, state: SymbolicState, monster: Position) -> int | None:
         """Move one tile directly away from the monster, if walkable."""
