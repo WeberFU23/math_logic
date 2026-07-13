@@ -69,8 +69,8 @@ class SymbolicState:
     npcs: set[Position] = field(default_factory=set)
     keys: int = 0
     health: int | None = None
-    has_sword: bool = True
-    has_shield: bool = True
+    has_sword: bool = False
+    has_shield: bool = False
 
     @property
     def all_exits(self) -> set[Position]:
@@ -100,10 +100,11 @@ class AgentMemory:
     room_memory: dict[RoomCoord, RoomSnapshot] = field(default_factory=dict)
     previous_chests: set[Position] = field(default_factory=set)
     previous_monsters: set[Position] = field(default_factory=set)
+    previous_player: Position | None = None
     previous_room: RoomCoord = (0, 0)
     previous_health: int | None = None
-    has_sword: bool = True
-    has_shield: bool = True
+    has_sword: bool = False
+    has_shield: bool = False
     last_action: int = ACTION_NOOP
     step_index: int = 0
     room_steps: int = 0
@@ -124,9 +125,10 @@ class AgentMemory:
         self.room_memory.clear()
         self.previous_chests.clear()
         self.previous_monsters.clear()
+        self.previous_player = None
         self.previous_health = None
-        self.has_sword = task_id != "mathematical_logic/task_4"
-        self.has_shield = True
+        self.has_sword = False
+        self.has_shield = False
         self.last_action = ACTION_NOOP
         self.step_index = 0
         self.room_steps = 0
@@ -136,14 +138,46 @@ class AgentMemory:
         self.local_trigger_target = None
         self.local_trigger_step = -1
 
-    def observe_room_transition(self, player: Position) -> None:
-        if self.pending_room_delta is not None:
-            dx, dy = self.pending_room_delta
-            self.room = (self.room[0] + dx, self.room[1] + dy)
-            self.pending_room_delta = None
-            self._mark_entry_exit_used((dx, dy))
-            self._clear_previous_room_objects()
+    def observe_room_transition(self, player: Position) -> bool:
+        delta = self.pending_room_delta or self._infer_room_delta(player)
+        if delta is None:
+            return False
+        dx, dy = delta
+        self._mark_departure_exit_used(delta)
+        self.room = (self.room[0] + dx, self.room[1] + dy)
+        self.pending_room_delta = None
+        self._mark_entry_exit_used(delta)
+        self._clear_previous_room_objects()
+        return True
+
+    def _infer_room_delta(self, player: Position) -> RoomCoord | None:
+        previous = self.previous_player
+        if previous is None or self.last_action not in MOVE_DELTAS:
+            return None
+        if self.last_action == ACTION_LEFT and previous[0] <= 1 and player[0] >= 7:
+            return (-1, 0)
+        if self.last_action == ACTION_RIGHT and previous[0] >= 8 and player[0] <= 2:
+            return (1, 0)
+        if self.last_action == ACTION_UP and previous[1] <= 1 and player[1] >= 5:
+            return (0, -1)
+        if self.last_action == ACTION_DOWN and previous[1] >= 6 and player[1] <= 2:
+            return (0, 1)
+        return None
+
+    def _mark_departure_exit_used(self, delta: RoomCoord) -> None:
+        dx, dy = delta
+        if dx > 0:
+            exit_tiles = ((9, 3), (9, 4))
+        elif dx < 0:
+            exit_tiles = ((0, 3), (0, 4))
+        elif dy > 0:
+            exit_tiles = ((4, 7), (5, 7))
+        elif dy < 0:
+            exit_tiles = ((4, 0), (5, 0))
+        else:
             return
+        for pos in exit_tiles:
+            self.used_exits.add(globalize(self.room, pos))
 
     def _mark_entry_exit_used(self, delta: RoomCoord) -> None:
         dx, dy = delta
@@ -160,8 +194,8 @@ class AgentMemory:
         for pos in entry_tiles:
             self.used_exits.add(globalize(self.room, pos))
 
-    def update(self, state: SymbolicState) -> None:
-        self.observe_room_transition(state.player)
+    def update(self, state: SymbolicState) -> bool:
+        transitioned = self.observe_room_transition(state.player)
         state.room = self.room
         newly_opened: set[Position] = set()
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
@@ -200,11 +234,14 @@ class AgentMemory:
         self.previous_room = self.room
         self.previous_chests = set(state.chests)
         self.previous_monsters = set(state.monsters)
+        self.previous_player = state.player
         self.previous_health = state.health
         self.step_index += 1
         self.room_steps += 1
         if self.switch_cooldown > 0:
             self.switch_cooldown -= 1
+        return transitioned
+
     def _clear_previous_room_objects(self) -> None:
         self.last_goal = None
         self.room_steps = 0
@@ -255,11 +292,3 @@ def action_from_step(current: Position, nxt: Position) -> int:
     if (dx, dy) == (1, 0):
         return ACTION_RIGHT
     return ACTION_NOOP
-
-
-
-
-
-
-
-

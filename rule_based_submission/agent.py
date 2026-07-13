@@ -21,7 +21,6 @@ from rule_based_submission.symbolic import (
     Position,
     SymbolicState,
     TILE_SIZE,
-    globalize,
     manhattan,
     next_position,
 )
@@ -40,20 +39,28 @@ class Policy:
         self._facing: int = ACTION_RIGHT
         self._debug = debug
         self._step = 0
+        self._last_player_center: tuple[float, float] | None = None
+        self._stationary_move_ticks = 0
 
     def reset(self, seed: int | None = None, task_id: str | None = None) -> None:
         del seed
         self.memory.reset(task_id=task_id)
-        self._queued_action = 0
+        self._queued_action = ACTION_NOOP
         self._queued_ticks = 0
+        self._blocked_action = None
+        self._blocked_ticks = 0
+        self._force_fight_ticks = 0
         self._facing = ACTION_RIGHT
+        self._step = 0
+        self._last_player_center = None
+        self._stationary_move_ticks = 0
         reset_vision()
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
         self._step += 1
-        self._observe_events(info)
+        state = perceive(obs, self.memory, info)
+        self._observe_motion(state)
         if self._queued_ticks > 0:
-            state = perceive(obs, self.memory, info)
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
                 self._log(f"QUEUE INTERRUPT reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  (tick={self._queued_ticks})")
@@ -67,8 +74,9 @@ class Policy:
             self._facing = self._queued_action
             return self._queued_action
 
-        state = perceive(obs, self.memory, info)
-        self.memory.update(state)
+        transitioned = self.memory.update(state)
+        if transitioned:
+            reset_vision()
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
@@ -121,65 +129,41 @@ class Policy:
         ACTION_LEFT: "LEFT", ACTION_RIGHT: "RIGHT", ACTION_A: "A", ACTION_B: "B",
     }
 
-    def _observe_events(self, info: dict[str, Any] | None) -> None:
-        if not isinstance(info, dict):
+    def _observe_motion(self, state: SymbolicState) -> None:
+        """Infer blocked movement from successive player pixels, without debug info."""
+        center = state.player_center_px
+        previous = self._last_player_center
+        self._last_player_center = center
+        if center is None or previous is None or self.memory.last_action not in MOVE_DELTAS:
+            self._stationary_move_ticks = 0
             return
-        records = info.get("events", {}).get("records", [])
-        blocked = any(
-            isinstance(record, dict) and record.get("name") == "action_blocked"
-            for record in records
-        )
-        if blocked:
-            self._blocked_action = self.memory.last_action
-            self._blocked_ticks = min(6, self._blocked_ticks + 1)
-            self._queued_action = ACTION_NOOP
-            self._queued_ticks = 0
-            self.memory.pending_room_delta = None
-        elif self._blocked_ticks > 0:
-            self._blocked_ticks -= 1
-            if self._blocked_ticks == 0:
-                self._blocked_action = None
 
-        self._observe_exit_events(records)
-
-    def _observe_exit_events(self, records: list[dict[str, Any]]) -> None:
-        for record in records:
-            if not isinstance(record, dict) or record.get("name") != "exit_reached":
-                continue
-            target = None
-            if self.memory.last_goal is not None and self.memory.last_goal.kind == GoalKind.GO_TO_EXIT:
-                target = self.memory.last_goal.target
-            if target is not None:
-                self._mark_exit_used(self.memory.room, target)
-            direction = str(record.get("direction", ""))
-            delta = {
-                "north": (0, -1),
-                "south": (0, 1),
-                "west": (-1, 0),
-                "east": (1, 0),
-            }.get(direction)
-            if delta is not None:
-                self.memory.pending_room_delta = delta
-            self._queued_action = ACTION_NOOP
-            self._queued_ticks = 0
+        dx = center[0] - previous[0]
+        dy = center[1] - previous[1]
+        wrapped = abs(dx) > TILE_SIZE * 4 or abs(dy) > TILE_SIZE * 3
+        expected_progress = {
+            ACTION_UP: -dy,
+            ACTION_DOWN: dy,
+            ACTION_LEFT: -dx,
+            ACTION_RIGHT: dx,
+        }[self.memory.last_action]
+        if wrapped or expected_progress >= 0.5:
+            self._stationary_move_ticks = 0
+            self._blocked_action = None
+            self._blocked_ticks = 0
             return
+
+        self._stationary_move_ticks += 1
+        if self._stationary_move_ticks < 2:
+            return
+        self._blocked_action = self.memory.last_action
+        self._blocked_ticks = min(6, self._blocked_ticks + 1)
+        self._queued_action = ACTION_NOOP
+        self._queued_ticks = 0
+
     def _is_door_exit(self, pos) -> bool:
         col, row = pos
         return ((row in {0, 7} and col in {4, 5}) or (col in {0, 9} and row in {3, 4}))
-
-    def _mark_exit_used(self, room, pos) -> None:
-        self.memory.used_exits.add(globalize(room, pos))
-        col, row = pos
-        if row in {0, 7}:
-            for other_col in (col - 1, col + 1):
-                if 0 <= other_col < 10:
-                    self.memory.used_exits.add(globalize(room, (other_col, row)))
-        if col in {0, 9}:
-            for other_row in (row - 1, row + 1):
-                if 0 <= other_row < 8:
-                    self.memory.used_exits.add(globalize(room, (col, other_row)))
-
-
 
     def _forced_combat_goal(self, state: SymbolicState) -> Goal | None:
         if self._force_fight_ticks <= 0:
@@ -431,11 +415,3 @@ class Policy:
 
 def make_policy(*, debug: bool = False) -> Policy:
     return Policy(debug=debug)
-
-
-
-
-
-
-
-

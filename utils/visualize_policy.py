@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from nesylink.core.constants import ACTION_LABELS
 from nesylink.env import make_env
 from rule_based_submission.agent import make_policy
+from utils.evaluate_policy import build_safe_info
 
 
 DEFAULT_TASK = "mathematical_logic/task_4"
@@ -57,7 +58,7 @@ def main() -> None:
 
 def run_episode(args: argparse.Namespace) -> tuple[list[Image.Image], dict[str, Any]]:
     policy = make_policy(debug=args.debug)
-    policy.reset(seed=args.seed, task_id=args.task)
+    policy.reset()
     env = make_env(
         task_id=args.task,
         observation_mode="pixels",
@@ -66,6 +67,7 @@ def run_episode(args: argparse.Namespace) -> tuple[list[Image.Image], dict[str, 
     )
 
     obs, info = env.reset(seed=args.seed)
+    policy_info = build_safe_info(raw_info=info, last_reward=0.0, task_id=None)
     frames: list[Image.Image] = []
     events: Counter[str] = Counter()
     recent_events: deque[str] = deque(maxlen=5)
@@ -76,8 +78,9 @@ def run_episode(args: argparse.Namespace) -> tuple[list[Image.Image], dict[str, 
 
     try:
         while not (terminated or truncated):
-            action = policy.act(obs, info)
+            action = policy.act(obs, policy_info)
             obs, reward, terminated, truncated, info = env.step(action)
+            policy_info = build_safe_info(raw_info=info, last_reward=float(reward), task_id=None)
             step += 1
             total_reward += float(reward)
 
