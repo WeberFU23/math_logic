@@ -19,10 +19,9 @@ from rule_based_submission.symbolic import (
 def is_walkable(pos: Position, state: SymbolicState, *, allow_goal: bool = False) -> bool:
     if not in_bounds(pos):
         return False
-    blockers = set(state.walls) | set(state.gaps) | set(state.traps)
-    blockers |= set(state.chests)
-    blockers |= set(state.monsters)
-    blockers -= set(state.bridges)
+    blockers = set(state.walls) | set(state.traps) | set(state.chests)
+    blockers |= set(state.monsters) | set(state.npcs)
+    blockers |= set(state.gaps) - set(state.bridges)
     if allow_goal:
         blockers -= state.all_exits
     return pos not in blockers

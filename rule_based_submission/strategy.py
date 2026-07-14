@@ -383,7 +383,7 @@ class RuleBasedPolicy(HighLevelPolicy):
             approach = (col, 6)
         else:
             return False
-        return approach in (state.walls | state.traps | state.gaps | state.chests | state.monsters)
+        return approach in (state.walls | state.traps | state.gaps | state.chests | state.monsters | state.npcs)
 
     def _neighbor_room(self, room: RoomCoord, exit_pos: Position) -> RoomCoord | None:
         col, row = exit_pos
@@ -429,7 +429,7 @@ class RuleBasedPolicy(HighLevelPolicy):
                                           g.target or (0, 0)))
 
     def _frontier(self, state: SymbolicState) -> Position | None:
-        blockers = state.walls | state.traps | state.gaps | state.chests | state.monsters
+        blockers = state.walls | state.traps | state.gaps | state.chests | state.monsters | state.npcs
         candidates = {
             (col, row)
             for row in range(8)

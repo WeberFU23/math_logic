@@ -75,7 +75,7 @@ class Policy:
 
         transitioned = self.memory.update(state)
         if transitioned:
-            reset_vision()
+            reset_vision(preserve_color_mode=True)
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")

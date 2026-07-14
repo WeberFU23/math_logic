@@ -51,6 +51,12 @@ from nesylink.core.rendering.sprites import (
 )
 
 
+from rule_based_submission.color_vision import (
+    SpriteMatch,
+    detect_dynamic_sprites,
+    infer_color_mode,
+    transform_color_image,
+)
 from rule_based_submission.symbolic import AgentMemory, Position, SymbolicState
 
 
@@ -104,6 +110,17 @@ class DynamicEntity:
     pixel_count: int
 
 
+def _dynamic_entity_from_match(match: SpriteMatch) -> DynamicEntity:
+    return DynamicEntity(
+        kind=match.kind,
+        bbox=match.bbox,
+        center_px=match.center_px,
+        anchor_tile=match.anchor_tile,
+        occupied_tiles=match.occupied_tiles,
+        pixel_count=match.pixel_count,
+    )
+
+
 @dataclass
 class SymbolicFrame:
     static: np.ndarray
@@ -112,6 +129,7 @@ class SymbolicFrame:
     monsters: list[DynamicEntity]
     dynamic_mask: np.ndarray
     raw_static: np.ndarray | None = None
+    color_mode: str = "default"
 
     def blocked_tiles(self) -> set[GridPos]:
         blocked = {tuple(pos) for pos in np.argwhere(self.static == WALL)[:, ::-1]}
@@ -130,60 +148,72 @@ class VisionExtractor:
     occlusion_threshold: float = 0.35
     templates: dict[str, np.ndarray] = field(default_factory=dict)
     positioned_templates: dict[tuple[int, int], dict[str, np.ndarray]] = field(default_factory=dict)
+    transformed_templates: dict[tuple[int, int, str], dict[str, np.ndarray]] = field(default_factory=dict)
     last_static: np.ndarray | None = None
     last_confidence: np.ndarray | None = None
+    last_symbolic_frame: SymbolicFrame | None = None
+    color_mode: str = "default"
+    color_mode_locked: bool = False
+    previous_player_origin: tuple[int, int] | None = None
+    previous_monster_origins: tuple[tuple[int, int], ...] = ()
+    dynamic_initialized: bool = False
 
     def __post_init__(self) -> None:
         if not self.templates:
             self.templates = build_template_library()
 
-    def reset(self) -> None:
+    def reset(self, *, preserve_color_mode: bool = False) -> None:
         self.last_static = None
         self.last_confidence = None
+        self.last_symbolic_frame = None
+        if not preserve_color_mode:
+            self.color_mode = "default"
+            self.color_mode_locked = False
+        self.previous_player_origin = None
+        self.previous_monster_origins = ()
+        self.dynamic_initialized = False
 
     def extract(self, obs: np.ndarray) -> SymbolicFrame:
         frame = _map_frame(obs)
-        player_mask = _mask_colors(frame, PLAYER_COLORS, tolerance=self.dynamic_tolerance)
-        monster_mask = _mask_colors(frame, MONSTER_COLORS, tolerance=self.dynamic_tolerance)
-
-        # Outline is shared by all sprites. Keep it only where a unique player or
-        # monster color is nearby, otherwise walls and chests would look dynamic.
-        player_seed = _mask_colors(
+        if not self.color_mode_locked:
+            self.color_mode = infer_color_mode(frame)
+            self.color_mode_locked = True
+        player_match, monster_matches, dynamic_mask = detect_dynamic_sprites(
             frame,
-            {PLAYER_TUNIC, PLAYER_TUNIC_LIGHT},
-            tolerance=min(self.dynamic_tolerance, 4),
+            self.color_mode,
+            previous_player_origin=self.previous_player_origin,
+            previous_monster_origins=self.previous_monster_origins,
+            scan_for_monsters=not self.dynamic_initialized,
         )
-        monster_seed = _mask_colors(
-            frame,
-            {COLOR_MONSTER_CHASER, COLOR_MONSTER_PATROLLER, COLOR_MONSTER_AMBUSHER},
-            tolerance=self.dynamic_tolerance,
-        )
-        player_mask &= _dilate(player_seed, radius=7)
-        monster_mask &= _dilate(monster_seed, radius=2)
-        monster_mask &= ~player_mask
+        self.previous_player_origin = player_match.origin
+        self.previous_monster_origins = tuple(match.origin for match in monster_matches)
+        self.dynamic_initialized = True
+        player = _dynamic_entity_from_match(player_match)
+        monster_entities = [_dynamic_entity_from_match(match) for match in monster_matches]
 
-        player_entities = _entities_from_mask(player_mask, "player", min_pixels=self.min_player_pixels)
-        monster_entities = _entities_from_mask(monster_mask, "monster", min_pixels=self.min_monster_pixels)
-        player = max(player_entities, key=lambda item: item.pixel_count, default=None)
-
-        static, confidence = self._classify_static(frame, player_mask | monster_mask)
+        static, confidence = self._classify_static(frame, dynamic_mask, self.color_mode)
         raw_static = static.copy()
 
         if self.use_memory:
-            static, confidence = self._merge_memory(static, confidence, player_mask | monster_mask)
+            static, confidence = self._merge_memory(static, confidence, dynamic_mask)
             self.last_static = static.copy()
             self.last_confidence = confidence.copy()
 
-        return SymbolicFrame(
+        symbolic = SymbolicFrame(
             static=static,
             confidence=confidence,
             player=player,
             monsters=monster_entities,
-            dynamic_mask=player_mask | monster_mask,
+            dynamic_mask=dynamic_mask,
             raw_static=raw_static,
+            color_mode=self.color_mode,
         )
+        self.last_symbolic_frame = symbolic
+        return symbolic
 
-    def _classify_static(self, frame: np.ndarray, dynamic_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _classify_static(
+        self, frame: np.ndarray, dynamic_mask: np.ndarray, color_mode: str
+    ) -> tuple[np.ndarray, np.ndarray]:
         static = np.full((MAP_HEIGHT_TILES, MAP_WIDTH_TILES), UNKNOWN, dtype=object)
         confidence = np.zeros((MAP_HEIGHT_TILES, MAP_WIDTH_TILES), dtype=np.float32)
 
@@ -195,7 +225,7 @@ class VisionExtractor:
                 mask = dynamic_mask[y0 : y0 + TILE_SIZE, x0 : x0 + TILE_SIZE]
                 label, score, second_score = classify_tile(
                     tile,
-                    self._templates_for_position(col, row),
+                    self._templates_for_position(col, row, color_mode),
                     ignore_mask=mask,
                 )
                 static[row, col] = label
@@ -206,13 +236,21 @@ class VisionExtractor:
 
         return static, confidence
 
-    def _templates_for_position(self, col: int, row: int) -> dict[str, np.ndarray]:
+    def _templates_for_position(self, col: int, row: int, color_mode: str) -> dict[str, np.ndarray]:
         key = (col, row)
         templates = self.positioned_templates.get(key)
         if templates is None:
             templates = build_positioned_template_library(col, row)
             self.positioned_templates[key] = templates
-        return templates
+        transformed_key = (col, row, color_mode)
+        transformed = self.transformed_templates.get(transformed_key)
+        if transformed is None:
+            transformed = {
+                label: transform_color_image(template, color_mode)
+                for label, template in templates.items()
+            }
+            self.transformed_templates[transformed_key] = transformed
+        return transformed
 
     def _merge_memory(
         self,
@@ -704,17 +742,24 @@ def _component(
 # -------------------
 
 _extractor = VisionExtractor(use_memory=True)
+_last_policy_symbolic_frame: SymbolicFrame | None = None
 
 
-def reset_vision() -> None:
-    _extractor.reset()
+def get_last_symbolic_frame() -> SymbolicFrame | None:
+    return _last_policy_symbolic_frame
+
+
+def reset_vision(*, preserve_color_mode: bool = False) -> None:
+    _extractor.reset(preserve_color_mode=preserve_color_mode)
 
 
 def perceive(
     obs: Any, memory: AgentMemory, info: dict[str, Any] | None = None
 ) -> SymbolicState:
     frame = _observation_frame(obs)
+    global _last_policy_symbolic_frame
     symbolic = _extractor.extract(frame)
+    _last_policy_symbolic_frame = symbolic
     static = symbolic.static  # (8, 10) grid of string labels
 
     walls: set[Position] = set()
