@@ -63,8 +63,42 @@ class Policy:
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
         self._step += 1
+        previous_monsters = set(self.memory.previous_monsters)
         state = perceive(obs, self.memory, info)
         self._observe_motion(state)
+        # Update memory before honoring a queued movement. Exit traversal can
+        # queue many pixel-level ticks; postponing this update until the queue
+        # is empty makes the agent carry the old room's plan into the new room.
+        transitioned = self.memory.update(state)
+        if transitioned:
+            self._log(
+                f"ROOM TRANSITION -> {state.room}; clearing movement queue "
+                f"(ticks_left={self._queued_ticks})"
+            )
+            self._queued_action = ACTION_NOOP
+            self._queued_ticks = 0
+            self._blocked_action = None
+            self._blocked_ticks = 0
+            self._last_planned_action = None
+            self._stationary_move_ticks = 0
+            reset_vision(preserve_color_mode=True)
+
+        newly_detected_monsters = state.monsters - previous_monsters
+        exiting_on_queue = (
+            self._queued_ticks > 0
+            and self.memory.last_goal is not None
+            and self.memory.last_goal.kind == GoalKind.GO_TO_EXIT
+        )
+        if exiting_on_queue and newly_detected_monsters:
+            self._log(
+                f"QUEUE INTERRUPT new_monsters={newly_detected_monsters}; "
+                "replanning exit goal"
+            )
+            self._queued_action = ACTION_NOOP
+            self._queued_ticks = 0
+            self.memory.last_goal = None
+            self._last_planned_action = None
+
         if self._queued_ticks > 0:
             urgent_action = self._combat_reflex(state)
             if urgent_action is not None:
@@ -75,10 +109,6 @@ class Policy:
             self.memory.last_action = self._queued_action
             self._facing = self._queued_action
             return self._queued_action
-
-        transitioned = self.memory.update(state)
-        if transitioned:
-            reset_vision(preserve_color_mode=True)
         urgent_action = self._combat_reflex(state)
         if urgent_action is not None:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")

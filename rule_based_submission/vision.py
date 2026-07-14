@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -121,6 +121,42 @@ def _dynamic_entity_from_match(match: SpriteMatch) -> DynamicEntity:
     )
 
 
+def _stabilize_boundary_anchor(
+    match: SpriteMatch,
+    previous_origin: tuple[int, int] | None,
+    previous_anchor: tuple[int, int] | None,
+) -> SpriteMatch:
+    """Resolve rendered centers exactly on grid lines using temporal direction."""
+    if previous_origin is None:
+        return match
+
+    anchor = list(match.anchor_tile)
+    centers = match.center_px
+    previous_centers = (
+        previous_origin[0] + match.foreground_mask.shape[1] / 2.0,
+        previous_origin[1] + match.foreground_mask.shape[0] / 2.0,
+    )
+    limits = (MAP_WIDTH_TILES, MAP_HEIGHT_TILES)
+    changed = False
+    for axis in (0, 1):
+        center = centers[axis]
+        if abs(center % TILE_SIZE) > 1e-6:
+            continue
+        boundary_tile = int(center // TILE_SIZE)
+        if previous_centers[axis] < center:
+            resolved = boundary_tile - 1
+        elif previous_centers[axis] > center:
+            resolved = boundary_tile
+        elif previous_anchor is not None:
+            resolved = previous_anchor[axis]
+        else:
+            continue
+        resolved = max(0, min(limits[axis] - 1, resolved))
+        changed = changed or resolved != anchor[axis]
+        anchor[axis] = resolved
+    return replace(match, anchor_tile=tuple(anchor)) if changed else match
+
+
 @dataclass
 class SymbolicFrame:
     static: np.ndarray
@@ -155,6 +191,7 @@ class VisionExtractor:
     color_mode: str = "default"
     color_mode_locked: bool = False
     previous_player_origin: tuple[int, int] | None = None
+    previous_player_anchor: tuple[int, int] | None = None
     previous_monster_origins: tuple[tuple[int, int], ...] = ()
     dynamic_initialized: bool = False
     monster_rescan_ticks: int = 0
@@ -171,6 +208,7 @@ class VisionExtractor:
             self.color_mode = "default"
             self.color_mode_locked = False
         self.previous_player_origin = None
+        self.previous_player_anchor = None
         self.previous_monster_origins = ()
         self.dynamic_initialized = False
         self.monster_rescan_ticks = 0
@@ -194,8 +232,14 @@ class VisionExtractor:
             self.monster_rescan_ticks = 8
         elif self.monster_rescan_ticks > 0:
             self.monster_rescan_ticks -= 1
+        player_match = _stabilize_boundary_anchor(
+            player_match,
+            self.previous_player_origin,
+            self.previous_player_anchor,
+        )
         self.previous_player_origin = player_match.origin
         self.previous_monster_origins = tuple(match.origin for match in monster_matches)
+        self.previous_player_anchor = player_match.anchor_tile
         self.dynamic_initialized = True
         player = _dynamic_entity_from_match(player_match)
         monster_entities = [_dynamic_entity_from_match(match) for match in monster_matches]
@@ -830,7 +874,7 @@ def perceive(
     locked_exits = locked_exits - walls - chests - traps
     conditional_exits = conditional_exits - walls - chests - traps
 
-    keys, has_sword, has_shield, health = _inventory(info, memory)
+    keys, gold, has_sword, has_shield, health = _inventory(info, memory)
 
     return SymbolicState(
         player=player,
@@ -849,6 +893,7 @@ def perceive(
         gaps=gaps - bridges,
         npcs=npcs,
         keys=keys,
+        gold=gold,
         health=health,
         has_sword=has_sword,
         has_shield=has_shield,
@@ -872,8 +917,9 @@ def _observation_frame(obs: Any) -> np.ndarray:
 
 def _inventory(
     info: dict[str, Any] | None, memory: AgentMemory
-) -> tuple[int, bool, bool, int | None]:
+) -> tuple[int, int, bool, bool, int | None]:
     keys = 0
+    gold = 0
     has_sword = memory.has_sword
     has_shield = memory.has_shield
     health: int | None = None
@@ -884,13 +930,17 @@ def _inventory(
                 keys = max(0, int(inventory.get("keys", 0)))
             except (TypeError, ValueError):
                 pass
+            try:
+                gold = max(0, int(inventory.get("gold", 0)))
+            except (TypeError, ValueError):
+                pass
             equipped = inventory.get("equipped", {})
             items = inventory.get("items", [])
             text = f"{equipped} {items}".lower()
             has_sword = has_sword or "sword" in text
             has_shield = has_shield or "shield" in text
 
-    return keys, has_sword, has_shield, health
+    return keys, gold, has_sword, has_shield, health
 
 
 # Optional live debugger

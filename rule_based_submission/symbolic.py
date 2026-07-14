@@ -68,6 +68,7 @@ class SymbolicState:
     gaps: set[Position] = field(default_factory=set)
     npcs: set[Position] = field(default_factory=set)
     keys: int = 0
+    gold: int = 0
     health: int | None = None
     has_sword: bool = False
     has_shield: bool = False
@@ -106,6 +107,8 @@ class AgentMemory:
     has_sword: bool = False
     has_shield: bool = False
     last_action: int = ACTION_NOOP
+    previous_keys: int = 0
+    previous_gold: int = 0
     step_index: int = 0
     room_steps: int = 0
     switch_cooldown: int = 0
@@ -130,6 +133,8 @@ class AgentMemory:
         self.has_sword = False
         self.has_shield = False
         self.last_action = ACTION_NOOP
+        self.previous_keys = 0
+        self.previous_gold = 0
         self.step_index = 0
         self.room_steps = 0
         self.switch_cooldown = 0
@@ -200,8 +205,13 @@ class AgentMemory:
         newly_opened: set[Position] = set()
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
             if self.last_goal.kind == GoalKind.OPEN_CHEST and manhattan(state.player, self.last_goal.target) <= 1:
-                self.opened_chests.add(globalize(self.room, self.last_goal.target))
-                newly_opened.add(self.last_goal.target)
+                if (
+                    state.keys > self.previous_keys
+                    or state.gold > self.previous_gold
+                    or (state.has_sword and not self.has_sword)
+                ):
+                    self.opened_chests.add(globalize(self.room, self.last_goal.target))
+                    newly_opened.add(self.last_goal.target)
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
                 self.activated_switches.add(globalize(self.room, self.last_goal.target))
                 state.switches.discard(self.last_goal.target)
@@ -236,6 +246,8 @@ class AgentMemory:
         self.previous_monsters = set(state.monsters)
         self.previous_player = state.player
         self.previous_health = state.health
+        self.previous_keys = state.keys
+        self.previous_gold = state.gold
         self.step_index += 1
         self.room_steps += 1
         if self.switch_cooldown > 0:
