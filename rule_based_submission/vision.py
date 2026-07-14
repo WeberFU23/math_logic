@@ -157,6 +157,7 @@ class VisionExtractor:
     previous_player_origin: tuple[int, int] | None = None
     previous_monster_origins: tuple[tuple[int, int], ...] = ()
     dynamic_initialized: bool = False
+    monster_rescan_ticks: int = 0
 
     def __post_init__(self) -> None:
         if not self.templates:
@@ -172,19 +173,27 @@ class VisionExtractor:
         self.previous_player_origin = None
         self.previous_monster_origins = ()
         self.dynamic_initialized = False
+        self.monster_rescan_ticks = 0
 
     def extract(self, obs: np.ndarray) -> SymbolicFrame:
         frame = _map_frame(obs)
         if not self.color_mode_locked:
             self.color_mode = infer_color_mode(frame)
             self.color_mode_locked = True
+        had_tracked_monsters = bool(self.previous_monster_origins)
         player_match, monster_matches, dynamic_mask = detect_dynamic_sprites(
             frame,
             self.color_mode,
             previous_player_origin=self.previous_player_origin,
             previous_monster_origins=self.previous_monster_origins,
-            scan_for_monsters=not self.dynamic_initialized,
+            scan_for_monsters=not self.dynamic_initialized or self.monster_rescan_ticks > 0,
         )
+        if monster_matches:
+            self.monster_rescan_ticks = 0
+        elif had_tracked_monsters:
+            self.monster_rescan_ticks = 8
+        elif self.monster_rescan_ticks > 0:
+            self.monster_rescan_ticks -= 1
         self.previous_player_origin = player_match.origin
         self.previous_monster_origins = tuple(match.origin for match in monster_matches)
         self.dynamic_initialized = True

@@ -28,6 +28,9 @@ from rule_based_submission.vision import perceive, reset_vision
 
 
 class Policy:
+    _FIGHT_COMMIT_TICKS = 64
+    _COMBAT_ALERT_RADIUS = 2
+
     def __init__(self, high_level_policy: HighLevelPolicy | None = None, *, debug: bool = False) -> None:
         self.memory = AgentMemory()
         self.high_level_policy = high_level_policy or RuleBasedPolicy(debug=debug)
@@ -80,7 +83,11 @@ class Policy:
         if urgent_action is not None:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
             return self._commit_urgent_action(urgent_action)
-        goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
+        goal = (
+            self._forced_combat_goal(state)
+            or self._alert_combat_goal(state)
+            or self.high_level_policy.choose_goal(state, self.memory)
+        )
         same_goal = self.memory.last_goal == goal
         preferred_action = self._last_planned_action if same_goal else None
         planned_action = action_for_goal(state, goal, preferred_action=preferred_action)
@@ -122,7 +129,7 @@ class Policy:
             self._facing = action
         if action == ACTION_A and state.monsters:
             if any(self._is_surrounding(state.player, m) for m in state.monsters):
-                self._force_fight_ticks = 0
+                self._refresh_fight_commitment()
         self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  planned={self._ACT_NAMES.get(planned_action,'?')}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
 
@@ -138,12 +145,32 @@ class Policy:
 
     def _commit_urgent_action(self, action: int) -> int:
         """Commit a combat-reflex action and keep internal facing consistent."""
-        if action == ACTION_A:
-            self._force_fight_ticks = 0
+        self._refresh_fight_commitment()
         if action in MOVE_DELTAS:
             self._facing = action
         self.memory.last_action = action
         return action
+
+    def _refresh_fight_commitment(self) -> None:
+        """Keep pursuing an engaged monster instead of returning to another goal."""
+        self._force_fight_ticks = max(self._force_fight_ticks, self._FIGHT_COMMIT_TICKS)
+
+    def _alert_combat_goal(self, state: SymbolicState) -> Goal | None:
+        """Engage a visible nearby monster before it reaches contact range."""
+        if not state.has_sword or (state.health is not None and state.health <= 1):
+            return None
+        threats = [
+            monster
+            for monster in state.monsters
+            if manhattan(state.player, monster) <= self._COMBAT_ALERT_RADIUS
+            and not self._wall_between(state, state.player, monster)
+        ]
+        if not threats:
+            return None
+        target = min(threats, key=lambda monster: self._monster_rank(state, monster))
+        self._refresh_fight_commitment()
+        self._log(f"COMBAT_ALERT -> {target}")
+        return Goal(GoalKind.ATTACK_MONSTER, target)
 
     def _observe_motion(self, state: SymbolicState) -> None:
         """Infer blocked movement from successive player pixels, without debug info."""
@@ -389,7 +416,11 @@ class Policy:
         if m_dist == 1:
             if state.has_sword:
                 if self._is_facing(state.player, target):
+                    if state.has_shield and self.memory.last_action == ACTION_A:
+                        return ACTION_B
                     return ACTION_A
+                if state.has_shield and self.memory.last_action != ACTION_B:
+                    return ACTION_B
                 # Turn toward the adjacent monster without retreating. The
                 # movement may be collision-blocked, but it still updates facing.
                 return self._turn_toward(state.player, target)
