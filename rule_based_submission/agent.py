@@ -121,7 +121,7 @@ class Policy:
         if action in MOVE_DELTAS:
             self._facing = action
         if action == ACTION_A and state.monsters:
-            if any(manhattan(state.player, m) <= 2 for m in state.monsters):
+            if any(self._is_surrounding(state.player, m) for m in state.monsters):
                 self._force_fight_ticks = 0
         self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  planned={self._ACT_NAMES.get(planned_action,'?')}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
@@ -376,7 +376,7 @@ class Policy:
 
         near_threats = [
             monster for monster in state.monsters
-            if manhattan(state.player, monster) <= 2
+            if self._is_surrounding(state.player, monster)
             and not self._wall_between(state, state.player, monster)
         ]
         if not near_threats:
@@ -397,7 +397,7 @@ class Policy:
                 return ACTION_B
             return self._step_away(state, target)
 
-        # -- diagonal adjacent (manhattan == 2, euclidean < 1.5) --------
+        # -- diagonally adjacent (Chebyshev distance == 1) --------------
         if state.has_sword:
             approach = self._step_toward_safe(state, target)
             if approach is not None:
@@ -456,6 +456,14 @@ class Policy:
     @staticmethod
     def _euclidean(a: Position, b: Position) -> float:
         return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+    @staticmethod
+    def _is_surrounding(player: Position, monster: Position) -> bool:
+        """Return whether the monster occupies one of the eight neighboring tiles."""
+        dx = abs(monster[0] - player[0])
+        dy = abs(monster[1] - player[1])
+        return max(dx, dy) == 1
+
 
     def _wall_between(self, state: SymbolicState, player: Position, monster: Position) -> bool:
         """True when a wall blocks the direct path to the monster."""
