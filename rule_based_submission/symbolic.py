@@ -69,6 +69,7 @@ class SymbolicState:
     npcs: set[Position] = field(default_factory=set)
     keys: int = 0
     gold: int = 0
+    last_reward: float = 0.0
     health: int | None = None
     has_sword: bool = False
     has_shield: bool = False
@@ -204,10 +205,11 @@ class AgentMemory:
         state.room = self.room
         newly_opened: set[Position] = set()
         if self.last_action == ACTION_A and self.last_goal is not None and self.last_goal.target is not None:
-            if self.last_goal.kind == GoalKind.OPEN_CHEST and manhattan(state.player, self.last_goal.target) <= 1:
+            if self.last_goal.kind == GoalKind.OPEN_CHEST and manhattan(state.player, self.last_goal.target) == 1:
                 if (
                     state.keys > self.previous_keys
                     or state.gold > self.previous_gold
+                    or state.last_reward > 0.0
                     or (state.has_sword and not self.has_sword)
                 ):
                     self.opened_chests.add(globalize(self.room, self.last_goal.target))

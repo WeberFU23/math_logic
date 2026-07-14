@@ -30,6 +30,7 @@ from rule_based_submission.vision import perceive, reset_vision
 class Policy:
     _FIGHT_COMMIT_TICKS = 64
     _COMBAT_ALERT_RADIUS = 2
+    _DIAGONAL_BLOCK_TICKS = 2
 
     def __init__(self, high_level_policy: HighLevelPolicy | None = None, *, debug: bool = False) -> None:
         self.memory = AgentMemory()
@@ -39,6 +40,9 @@ class Policy:
         self._blocked_action: int | None = None
         self._blocked_ticks = 0
         self._force_fight_ticks = 0
+        self._combat_target: Position | None = None
+        self._diagonal_guard_target: Position | None = None
+        self._diagonal_guard_ticks = 0
         self._facing: int = ACTION_RIGHT
         self._last_planned_action: int | None = None
         self._debug = debug
@@ -54,6 +58,9 @@ class Policy:
         self._blocked_action = None
         self._blocked_ticks = 0
         self._force_fight_ticks = 0
+        self._combat_target = None
+        self._diagonal_guard_target = None
+        self._diagonal_guard_ticks = 0
         self._facing = ACTION_RIGHT
         self._last_planned_action = None
         self._step = 0
@@ -81,7 +88,10 @@ class Policy:
             self._blocked_ticks = 0
             self._last_planned_action = None
             self._stationary_move_ticks = 0
+            self._clear_combat_target("room transition")
             reset_vision(preserve_color_mode=True)
+        else:
+            self._sync_combat_target(state, previous_monsters)
 
         newly_detected_monsters = state.monsters - previous_monsters
         exiting_on_queue = (
@@ -118,6 +128,10 @@ class Policy:
             or self._alert_combat_goal(state)
             or self.high_level_policy.choose_goal(state, self.memory)
         )
+        if goal.kind == GoalKind.ATTACK_MONSTER and goal.target is not None:
+            target = self._select_combat_target(state, state.monsters, preferred=goal.target)
+            if target is not None:
+                goal = Goal(GoalKind.ATTACK_MONSTER, target)
         same_goal = self.memory.last_goal == goal
         preferred_action = self._last_planned_action if same_goal else None
         planned_action = action_for_goal(state, goal, preferred_action=preferred_action)
@@ -185,6 +199,64 @@ class Policy:
         """Keep pursuing an engaged monster instead of returning to another goal."""
         self._force_fight_ticks = max(self._force_fight_ticks, self._FIGHT_COMMIT_TICKS)
 
+    def _clear_combat_target(self, reason: str) -> None:
+        if self._combat_target is not None:
+            self._log(f"COMBAT UNLOCK {self._combat_target}: {reason}")
+        self._combat_target = None
+        self._force_fight_ticks = 0
+        self._reset_diagonal_guard()
+
+    def _reset_diagonal_guard(self) -> None:
+        self._diagonal_guard_target = None
+        self._diagonal_guard_ticks = 0
+
+    def _sync_combat_target(
+        self, state: SymbolicState, previous_monsters: set[Position]
+    ) -> None:
+        """Track the locked monster as its detected tile changes."""
+        if self._combat_target is None:
+            return
+        if not state.monsters:
+            self._clear_combat_target("target disappeared")
+            return
+        if previous_monsters and len(state.monsters) < len(previous_monsters):
+            self._clear_combat_target("monster defeated")
+            return
+        previous_target = self._combat_target
+        self._combat_target = min(
+            state.monsters,
+            key=lambda monster: (
+                manhattan(previous_target, monster),
+                self._monster_rank(state, monster),
+            ),
+        )
+
+    def _select_combat_target(
+        self,
+        state: SymbolicState,
+        candidates: set[Position],
+        *,
+        preferred: Position | None = None,
+    ) -> Position | None:
+        if not candidates:
+            return None
+        if self._combat_target is not None:
+            target = min(
+                candidates,
+                key=lambda monster: (
+                    manhattan(self._combat_target, monster),
+                    self._monster_rank(state, monster),
+                ),
+            )
+        elif preferred in candidates:
+            target = preferred
+        else:
+            target = min(candidates, key=lambda monster: self._monster_rank(state, monster))
+        if self._combat_target is None:
+            self._log(f"COMBAT LOCK -> {target}")
+        self._combat_target = target
+        return target
+
     def _alert_combat_goal(self, state: SymbolicState) -> Goal | None:
         """Engage a visible nearby monster before it reaches contact range."""
         if not state.has_sword or (state.health is not None and state.health <= 1):
@@ -197,7 +269,9 @@ class Policy:
         ]
         if not threats:
             return None
-        target = min(threats, key=lambda monster: self._monster_rank(state, monster))
+        target = self._select_combat_target(state, set(threats))
+        if target is None:
+            return None
         self._refresh_fight_commitment()
         self._log(f"COMBAT_ALERT -> {target}")
         return Goal(GoalKind.ATTACK_MONSTER, target)
@@ -277,13 +351,14 @@ class Policy:
         return None
 
     def _forced_combat_goal(self, state: SymbolicState) -> Goal | None:
-        if self._force_fight_ticks <= 0:
+        if self._combat_target is None and self._force_fight_ticks <= 0:
             return None
-        self._force_fight_ticks -= 1
         if not state.has_sword or not state.monsters or (state.health is not None and state.health <= 1):
-            self._force_fight_ticks = 0
+            self._clear_combat_target("combat no longer possible")
             return None
-        target = min(state.monsters, key=lambda monster: self._monster_rank(state, monster))
+        target = self._select_combat_target(state, state.monsters)
+        if target is None:
+            return None
         self._log(f"FORCED_COMBAT -> {target}  (ticks_left={self._force_fight_ticks})")
         return Goal(GoalKind.ATTACK_MONSTER, target)
 
@@ -429,6 +504,7 @@ class Policy:
 
     def _combat_reflex(self, state: SymbolicState) -> int | None:
         if not state.monsters:
+            self._reset_diagonal_guard()
             return None
 
         near_threats = [
@@ -437,13 +513,26 @@ class Policy:
             and not self._wall_between(state, state.player, monster)
         ]
         if not near_threats:
+            self._reset_diagonal_guard()
             return None
 
-        target = min(near_threats, key=lambda monster: self._monster_rank(state, monster))
+        if self._combat_target is not None and self._combat_target not in near_threats:
+            # Do not switch attack targets merely because another monster came
+            # close. Defend against it while continuing to pursue the lock.
+            if state.has_shield:
+                return ACTION_B
+            return self._step_away(
+                state,
+                min(near_threats, key=lambda monster: self._monster_rank(state, monster)),
+            )
+        target = self._select_combat_target(state, set(near_threats))
+        if target is None:
+            return None
         m_dist = manhattan(state.player, target)
 
         # -- cardinal adjacent (manhattan == 1) -------------------------
         if m_dist == 1:
+            self._reset_diagonal_guard()
             if state.has_sword:
                 if self._is_facing(state.player, target):
                     if state.has_shield and self.memory.last_action == ACTION_A:
@@ -459,13 +548,24 @@ class Policy:
             return self._step_away(state, target)
 
         # -- diagonally adjacent (Chebyshev distance == 1) --------------
+        # A diagonal monster can already attack. Block briefly, then turn and
+        # counterattack continuously with the sword. Movement of the same
+        # locked monster must not restart the initial guard phase.
+        if self._diagonal_guard_target is None:
+            self._diagonal_guard_target = target
+            self._diagonal_guard_ticks = 0
+        else:
+            self._diagonal_guard_target = target
+        if state.has_shield and self._diagonal_guard_ticks < self._DIAGONAL_BLOCK_TICKS:
+            self._diagonal_guard_ticks += 1
+            return ACTION_B
         if state.has_sword:
-            approach = self._step_toward_safe(state, target)
-            if approach is not None:
-                return approach
+            if not self._is_facing(state.player, target):
+                return self._turn_toward(state.player, target)
+            return ACTION_A
         if state.has_shield:
             return ACTION_B
-        return None
+        return self._step_away(state, target)
 
     @staticmethod
     def _turn_toward(player: Position, target: Position) -> int:

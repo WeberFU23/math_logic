@@ -894,6 +894,7 @@ def perceive(
         npcs=npcs,
         keys=keys,
         gold=gold,
+        last_reward=_last_reward(info),
         health=health,
         has_sword=has_sword,
         has_shield=has_shield,
@@ -941,6 +942,15 @@ def _inventory(
             has_shield = has_shield or "shield" in text
 
     return keys, gold, has_sword, has_shield, health
+
+
+def _last_reward(info: dict[str, Any] | None) -> float:
+    if not isinstance(info, dict):
+        return 0.0
+    try:
+        return float(info.get("last_reward", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # Optional live debugger
