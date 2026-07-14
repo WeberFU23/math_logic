@@ -37,6 +37,7 @@ class Policy:
         self._blocked_ticks = 0
         self._force_fight_ticks = 0
         self._facing: int = ACTION_RIGHT
+        self._last_planned_action: int | None = None
         self._debug = debug
         self._step = 0
         self._last_player_center: tuple[float, float] | None = None
@@ -51,6 +52,7 @@ class Policy:
         self._blocked_ticks = 0
         self._force_fight_ticks = 0
         self._facing = ACTION_RIGHT
+        self._last_planned_action = None
         self._step = 0
         self._last_player_center = None
         self._stationary_move_ticks = 0
@@ -79,22 +81,29 @@ class Policy:
             self._log(f"PLAN  reflex->{self._ACT_NAMES.get(urgent_action, urgent_action)}  facing={self._ACT_NAMES.get(self._facing, '?')}  mons={state.monsters}  player={state.player}")
             return self._commit_urgent_action(urgent_action)
         goal = self._forced_combat_goal(state) or self.high_level_policy.choose_goal(state, self.memory)
-        raw_action = action_for_goal(state, goal)
+        same_goal = self.memory.last_goal == goal
+        preferred_action = self._last_planned_action if same_goal else None
+        planned_action = action_for_goal(state, goal, preferred_action=preferred_action)
+        if planned_action in MOVE_DELTAS:
+            self._last_planned_action = planned_action
+        elif not same_goal:
+            self._last_planned_action = None
+
+        raw_action = planned_action
         unstick_nudge = False
         pixel_nudge = False
         if self._blocked_action == raw_action and self._blocked_ticks > 0:
-            adjusted_action = self._alignment_action(state, raw_action)
+            # Push through an exit immediately. Only align with the doorway
+            # after outward movement has actually been observed as blocked.
+            adjusted_action = self._exit_alignment_action(state, goal, raw_action)
+            if adjusted_action is None:
+                adjusted_action = self._alignment_action(state, raw_action)
             if adjusted_action is None:
                 adjusted_action = self._unstick_action(state, goal, raw_action)
             else:
                 pixel_nudge = True
             unstick_nudge = adjusted_action != raw_action
             raw_action = adjusted_action
-        else:
-            align_action = self._alignment_action(state, raw_action)
-            if align_action is not None:
-                pixel_nudge = True
-                raw_action = align_action
         # Alignment nudges stay within the current tile for one pixel tick.
         # A tile-level shield would incorrectly reject them when a corridor
         # has walls immediately on both sides.
@@ -113,8 +122,8 @@ class Policy:
             self._facing = action
         if action == ACTION_A and state.monsters:
             if any(manhattan(state.player, m) <= 2 for m in state.monsters):
-                self._force_fight_ticks = 240
-        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
+                self._force_fight_ticks = 0
+        self._log(f"PLAN  goal={goal.kind.value}:{goal.target}  planned={self._ACT_NAMES.get(planned_action,'?')}  raw={self._ACT_NAMES.get(raw_action,'?')}  act={self._ACT_NAMES.get(action,'?')}  queue={self._queued_ticks}  facing={self._ACT_NAMES.get(self._facing,'?')}  mons={state.monsters}  chests={state.chests}  exits={state.all_exits}  room={state.room}  player={state.player}")
         return action
 
 
@@ -130,7 +139,7 @@ class Policy:
     def _commit_urgent_action(self, action: int) -> int:
         """Commit a combat-reflex action and keep internal facing consistent."""
         if action == ACTION_A:
-            self._force_fight_ticks = 240
+            self._force_fight_ticks = 0
         if action in MOVE_DELTAS:
             self._facing = action
         self.memory.last_action = action
@@ -171,6 +180,44 @@ class Policy:
     def _is_door_exit(self, pos) -> bool:
         col, row = pos
         return ((row in {0, 7} and col in {4, 5}) or (col in {0, 9} and row in {3, 4}))
+
+    def _exit_alignment_action(
+        self, state: SymbolicState, goal: Goal, planned_action: int
+    ) -> int | None:
+        """Centre the player in the selected doorway before pushing outward."""
+        if (
+            goal.kind != GoalKind.GO_TO_EXIT
+            or goal.target is None
+            or state.player != goal.target
+            or state.player_center_px is None
+        ):
+            return None
+
+        col, row = goal.target
+        center_x, center_y = state.player_center_px
+        target_x = col * TILE_SIZE + TILE_SIZE / 2.0
+        target_y = row * TILE_SIZE + TILE_SIZE / 2.0
+        tolerance = 1.5
+
+        vertical_exit = (
+            row == 0 and planned_action == ACTION_UP
+            or row == 7 and planned_action == ACTION_DOWN
+        )
+        horizontal_exit = (
+            col == 0 and planned_action == ACTION_LEFT
+            or col == 9 and planned_action == ACTION_RIGHT
+        )
+        if vertical_exit:
+            if center_x < target_x - tolerance:
+                return ACTION_RIGHT
+            if center_x > target_x + tolerance:
+                return ACTION_LEFT
+        elif horizontal_exit:
+            if center_y < target_y - tolerance:
+                return ACTION_DOWN
+            if center_y > target_y + tolerance:
+                return ACTION_UP
+        return None
 
     def _forced_combat_goal(self, state: SymbolicState) -> Goal | None:
         if self._force_fight_ticks <= 0:
@@ -262,8 +309,8 @@ class Policy:
             if state.monsters and min(manhattan(pos, monster) for monster in state.monsters) <= 1:
                 continue
             progress = manhattan(pos, target)
-            blocked_axis_turn = 0 if self._same_axis(action, blocked_action) else 1
-            score = (progress, -blocked_axis_turn, action, pos)
+            axis_change = 0 if self._same_axis(action, blocked_action) else 1
+            score = (progress, axis_change, action, pos)
             if best is None or score < best:
                 best = score
                 best_action = action

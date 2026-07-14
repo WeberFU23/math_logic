@@ -5,12 +5,14 @@ from collections import deque
 from rule_based_submission.symbolic import (
     Goal,
     GoalKind,
+    MOVE_DELTAS,
     Position,
     SymbolicState,
     action_from_step,
     in_bounds,
     manhattan,
     neighbors,
+    next_position,
 )
 
 
@@ -43,7 +45,7 @@ def goal_tiles(goal: Goal, state: SymbolicState) -> set[Position]:
     return set()
 
 
-def bfs_path(state: SymbolicState, goals: set[Position]) -> list[Position] | None:
+def bfs_path(state: SymbolicState, goals: set[Position], preferred_action: int | None = None) -> list[Position] | None:
     if not goals:
         return None
     queue: deque[Position] = deque([state.player])
@@ -53,7 +55,11 @@ def bfs_path(state: SymbolicState, goals: set[Position]) -> list[Position] | Non
         current = queue.popleft()
         if current in goals:
             return _reconstruct(parent, current)
-        for nxt in neighbors(current):
+        candidates = neighbors(current)
+        if current == state.player and preferred_action in MOVE_DELTAS:
+            preferred_step = next_position(current, preferred_action)
+            candidates.sort(key=lambda pos: 0 if pos == preferred_step else 1)
+        for nxt in candidates:
             if nxt in parent:
                 continue
             if nxt not in goals and not is_walkable(nxt, state):
@@ -69,8 +75,8 @@ def is_reachable(state: SymbolicState, goal: Goal) -> bool:
     return bfs_path(state, goal_tiles(goal, state)) is not None
 
 
-def next_move_toward(state: SymbolicState, goal: Goal) -> int | None:
-    path = bfs_path(state, goal_tiles(goal, state))
+def next_move_toward(state: SymbolicState, goal: Goal, preferred_action: int | None = None) -> int | None:
+    path = bfs_path(state, goal_tiles(goal, state), preferred_action=preferred_action)
     if path is None or len(path) < 2:
         return None
     return action_from_step(path[0], path[1])
