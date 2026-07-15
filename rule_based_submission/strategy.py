@@ -332,17 +332,14 @@ class RuleBasedPolicy(HighLevelPolicy):
         forward = self._avoid_entry_side(state, memory, candidates)
         candidates = forward or candidates
 
-        def rank(goal: Goal) -> tuple[int, int, int, int, int, Position]:
+        def rank(goal: Goal) -> tuple[int, int, int, int, Position]:
             target = goal.target or state.player
-            neighbor = self._neighbor_room(state.room, target)
-            unvisited = 0 if neighbor is not None and neighbor not in memory.room_memory else 1
             used = 1 if globalize(state.room, target) in memory.used_exits else 0
             blocked_approach = 1 if self._exit_approach_blocked(state, target) else 0
             entry = 1 if self._is_entry_side(state, goal) and memory.room_steps <= 4 else 0
             path = bfs_path(state, {target})
             distance = len(path) - 1 if path is not None else manhattan(state.player, target)
-            return (used, blocked_approach, unvisited, entry,
-                    distance, target)
+            return (used, blocked_approach, entry, distance, target)
 
         return min(candidates, key=rank)
 
@@ -359,18 +356,6 @@ class RuleBasedPolicy(HighLevelPolicy):
         else:
             return False
         return approach in (state.walls | state.traps | state.gaps | state.chests | state.monsters | state.npcs)
-
-    def _neighbor_room(self, room: RoomCoord, exit_pos: Position) -> RoomCoord | None:
-        col, row = exit_pos
-        if row == 0:
-            return (room[0], room[1] - 1)
-        if row == 7:
-            return (room[0], room[1] + 1)
-        if col == 0:
-            return (room[0] - 1, room[1])
-        if col == 9:
-            return (room[0] + 1, room[1])
-        return None
 
     def _avoid_entry_side(self, state: SymbolicState, memory: AgentMemory, goals: list[Goal]) -> list[Goal]:
         if memory.room_steps > 4:

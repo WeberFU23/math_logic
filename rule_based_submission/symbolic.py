@@ -89,7 +89,6 @@ class AgentMemory:
     activated_buttons: set[GlobalPosition] = field(default_factory=set)
     activated_switches: set[GlobalPosition] = field(default_factory=set)
     used_exits: set[GlobalPosition] = field(default_factory=set)
-    room_memory: set[RoomCoord] = field(default_factory=set)
     previous_chests: set[Position] = field(default_factory=set)
     previous_monsters: set[Position] = field(default_factory=set)
     previous_player: Position | None = None
@@ -115,7 +114,6 @@ class AgentMemory:
         self.activated_buttons.clear()
         self.activated_switches.clear()
         self.used_exits.clear()
-        self.room_memory.clear()
         self.previous_chests.clear()
         self.previous_monsters.clear()
         self.previous_player = None
@@ -220,7 +218,6 @@ class AgentMemory:
             self.local_trigger_step = self.step_index
         self.has_sword = self.has_sword or state.has_sword
         self.has_shield = self.has_shield or state.has_shield
-        self.room_memory.add(self.room)
         self.previous_room = self.room
         self.previous_chests = set(state.chests)
         self.previous_monsters = set(state.monsters)
