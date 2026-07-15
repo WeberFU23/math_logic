@@ -9,8 +9,8 @@ Expected policy interfaces:
 
 Example:
 
-    python utils/evaluate_policy.py --policy rule_based_submission/student_policy.py
-    python utils/evaluate_policy.py --policy rule_based_submission.student_policy:make_policy --tasks mathematical_logic/task_3
+    python utils/evaluate_policy.py --policy submissions/student_policy.py
+    python utils/evaluate_policy.py --policy submissions.student_policy:make_policy --tasks mathematical_logic/task_3
 """
 
 from __future__ import annotations

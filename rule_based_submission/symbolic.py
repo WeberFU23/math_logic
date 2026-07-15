@@ -74,6 +74,8 @@ class SymbolicState:
     # path. The legacy color detector leaves this empty.
     exit_labels: dict[Position, str] = field(default_factory=dict)
     keys: int = 0
+    gold: int = 0
+    last_reward: float = 0.0
     health: int | None = None
     has_sword: bool = True
     has_shield: bool = True

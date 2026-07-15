@@ -100,7 +100,7 @@ class HighLevelOptionEnv(gym.Env):
         if training_drain_interval is not None and task_id == "mathematical_logic/task_5":
             # Training-only curriculum knob.  Final evaluation constructs this
             # environment without it and therefore always uses the official
-            # 180-step interval.
+            # 200-step interval.
             from nesylink.rewards.mathematical_logic import task_5 as task5_reward
             task5_reward._DRAIN_INTERVAL = int(training_drain_interval)
         self.max_macro_steps = int(
@@ -217,7 +217,7 @@ class HighLevelOptionEnv(gym.Env):
         if defensive_action is not None:
             # One block is enough to break the monster's interception line.
             # Keep advancing afterwards; alternating shield/move wastes the
-            # task's strict 180-step health budget.
+            # task's strict 200-step health budget.
             self.defense_cooldown = 8
         if defensive_action is not None:
             raw_action, facing_only = defensive_action, True

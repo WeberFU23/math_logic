@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,10 @@ class Policy:
         self._env_steps = 0
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
+        task_id = _task_id_from_info(info)
+        if task_id is not None and task_id != self.task_id:
+            self.reset(task_id=task_id)
+
         elapsed_steps = self._env_steps
         self._env_steps += 1
         if self._queued_ticks > 0:
@@ -147,7 +152,7 @@ class Policy:
         if defensive_action is not None:
             # One block is enough to break the monster's interception line.
             # Keep advancing afterwards; alternating shield/move wastes the
-            # task's strict 180-step health budget.
+            # task's strict 200-step health budget.
             self._defense_cooldown = 8
         if defensive_action is not None:
             raw_action, facing_only = defensive_action, True
@@ -269,6 +274,7 @@ class Policy:
         return 3
 
 
+@lru_cache(maxsize=5)
 def _load_model(task_id: str | None):
     if MaskablePPO is None or not task_id:
         return None
@@ -276,6 +282,13 @@ def _load_model(task_id: str | None):
     if not path.exists():
         return None
     return MaskablePPO.load(path, device="cpu")
+
+
+def _task_id_from_info(info: dict[str, Any] | None) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    task_id = info.get("task_id")
+    return task_id if isinstance(task_id, str) and task_id else None
 
 
 def _transition_succeeded(start: tuple[int, int], end: tuple[int, int]) -> bool:

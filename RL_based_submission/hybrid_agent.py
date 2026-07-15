@@ -17,7 +17,6 @@ from rule_based_submission.agent import Policy as RulePolicy
 
 RULE_PREFERRED_TASKS = {
     "mathematical_logic/task_2",
-    "mathematical_logic/task_4",
 }
 
 
@@ -41,8 +40,29 @@ class Policy:
         self.rule.reset(seed=seed, task_id=task_id)
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
-        return self._active.act(obs, info)
+        policy_info = _safe_policy_info(info)
+        task_id = _task_id_from_info(policy_info)
+        if task_id is not None and task_id != self.task_id:
+            self.reset(task_id=task_id)
+        return self._active.act(obs, policy_info)
 
 
 def make_policy() -> Policy:
     return Policy()
+
+
+def _task_id_from_info(info: dict[str, Any] | None) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    task_id = info.get("task_id")
+    return task_id if isinstance(task_id, str) and task_id else None
+
+
+def _safe_policy_info(info: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    return {
+        key: info[key]
+        for key in ("task_id", "last_reward", "inventory")
+        if key in info
+    }

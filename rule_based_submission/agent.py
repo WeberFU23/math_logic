@@ -44,9 +44,13 @@ class Policy:
     def reset(self, seed: int | None = None, task_id: str | None = None) -> None:
         del seed
         self.memory.reset(task_id=task_id)
-        self._queued_action = 0
+        self._queued_action = ACTION_NOOP
         self._queued_ticks = 0
+        self._blocked_action = None
+        self._blocked_ticks = 0
+        self._force_fight_ticks = 0
         self._facing = ACTION_RIGHT
+        self._step = 0
         reset_vision()
 
     def act(self, obs: Any, info: dict[str, Any] | None = None) -> int:
@@ -305,7 +309,6 @@ class Policy:
 
 def make_policy(*, debug: bool = False) -> Policy:
     return Policy(debug=debug)
-
 
 
 

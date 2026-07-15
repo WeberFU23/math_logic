@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
         "--task5-drain-interval",
         type=int,
         default=None,
-        help="Training-only Task-5 curriculum interval; evaluation remains 180.",
+        help="Training-only Task-5 curriculum interval; evaluation remains 200.",
     )
     return parser.parse_args()
 

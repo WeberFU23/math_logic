@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from RL_based_submission.vision_extractor import (
+from rule_based_submission.vision import (
     ABYSS,
     BRIDGE,
     BUTTON,
@@ -50,7 +50,7 @@ class AdvancedPerceptor:
     def reset_room_vision(self) -> None:
         """Prevent static-memory pixels from one room leaking into the next."""
 
-        self.extractor.reset()
+        self.extractor.reset(preserve_color_mode=True)
         self.last_frame = None
         self.last_player = None
 
@@ -76,12 +76,12 @@ class AdvancedPerceptor:
                     else:
                         normal_exits.add((col, row))
 
-        player = frame.player.anchor_tile if frame.player is not None else self._fallback_player()
+        player_center_px = _legacy_entity_center(frame.player) if frame.player is not None else None
+        player = _tile_from_center(player_center_px) if player_center_px is not None else self._fallback_player()
         if frame.player is not None:
             self.last_player = player
-        player_center_px = frame.player.center_px if frame.player is not None else None
-        player_position_px = self._player_position_px(frame)
-        monsters = {entity.anchor_tile for entity in frame.monsters}
+        player_position_px = self._player_position_px(player_center_px)
+        monsters = {_tile_from_center(_legacy_entity_center(entity)) for entity in frame.monsters}
         keys, gold, has_sword, has_shield, has_heal = _allowed_inventory(info)
 
         return SymbolicState(
@@ -120,10 +120,13 @@ class AdvancedPerceptor:
         # room center.  At the first frame, retain the legacy center fallback.
         return self.last_player or (4, 4)
 
-    def _player_position_px(self, frame: SymbolicFrame) -> tuple[float, float] | None:
-        if frame.player is None:
+    def _player_position_px(
+        self,
+        center_px: tuple[float, float] | None,
+    ) -> tuple[float, float] | None:
+        if center_px is None:
             return None
-        center_x, center_y = frame.player.center_px
+        center_x, center_y = center_px
         # The colored sprite bbox is asymmetric for side-facing frames.
         if self.memory.facing_action == ACTION_LEFT:
             left = center_x - 8.5
@@ -132,6 +135,17 @@ class AdvancedPerceptor:
         else:
             left = center_x - 7.5
         return (float(round(left)), float(round(center_y - 7.5)))
+
+
+def _legacy_entity_center(entity: Any) -> tuple[float, float]:
+    """Reproduce the bbox-center coordinates used when the PPO policy was trained."""
+
+    left, top, right, bottom = entity.bbox
+    return ((left + right - 1) / 2.0, (top + bottom - 1) / 2.0)
+
+
+def _tile_from_center(center_px: tuple[float, float]) -> Position:
+    return (int(center_px[0] // 16), int(center_px[1] // 16))
 
 
 def _allowed_inventory(info: dict[str, Any] | None) -> tuple[int, int, bool, bool, bool]:
