@@ -425,3 +425,138 @@
 4. **卡墙检测 + 对齐 + 脱困**三层机制处理像素级移动的不确定性
 5. **时序记忆**弥合视觉遮挡和跨帧信息丢失
 6. **模块化设计**：`HighLevelPolicy` 抽象基类允许未来用 RL 策略替换 `RuleBasedPolicy`，不影响感知、规划、执行和安全盾层
+
+---
+
+## 9. 测试与调试命令行
+
+以下命令在项目根目录执行，PowerShell 使用 `` ` `` 换行。
+
+### 9.1 快速功能测试
+
+```powershell
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_1 `
+  --num-envs 5
+```
+
+### 9.2 调试模式（获取完整环境 info）
+
+```powershell
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_1 `
+  --info-mode full `
+  --num-envs 3
+```
+
+### 9.3 正式鲁棒性测评
+
+```powershell
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_1 mathematical_logic/task_2 mathematical_logic/task_3 mathematical_logic/task_4 mathematical_logic/task_5 `
+  --info-mode safe `
+  --robustness-suite `
+  --num-envs 100 `
+  --json-out results/robustness_suite_eval.json
+```
+
+### 9.4 定向鲁棒性测试
+
+```powershell
+# 只测 spatial 阶段（地图变体）
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_3 `
+  --info-mode safe `
+  --robustness-stages spatial `
+  --num-envs 3
+
+# 只测 color 阶段（颜色变体）
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_3 `
+  --info-mode safe `
+  --robustness-stages color `
+  --num-envs 3
+
+# 同时测多个阶段
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_3 `
+  --info-mode safe `
+  --robustness-stages spatial color `
+  --num-envs 3
+```
+
+### 9.5 可视化回放（GIF）
+
+```powershell
+# 保存逐 episode 的 GIF
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_3 `
+  --info-mode safe `
+  --robustness-stages spatial `
+  --num-envs 3 `
+  --visualize-dir runs/task3_spatial_replays `
+  --visualize-stride 4 `
+  --visualize-fps 12
+
+# 只保留失败回放
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_3 `
+  --info-mode safe `
+  --robustness-stages spatial `
+  --num-envs 3 `
+  --visualize-dir runs/task3_spatial_replays `
+  --visualize-failures-only
+```
+
+### 9.6 策略决策日志
+
+```powershell
+python utils/evaluate_policy.py `
+  --policy rule_based_submission.agent:Policy `
+  --tasks mathematical_logic/task_5 `
+  --info-mode safe `
+  --robustness-stages spatial `
+  --num-envs 3 `
+  --debug-policy
+```
+
+### 9.7 视觉感知调试器
+
+```powershell
+python -m rule_based_submission.vision `
+  --task mathematical_logic/task_1 `
+  --seed 0
+```
+
+启动 pygame 交互窗口，按键：
+- 方向键=移动  Z=A(剑)  X=B(盾)
+- V=切换叠加层（瓦片分类 + 精灵检测边框）
+- C=打印当前帧检测结果
+- Esc=退出
+
+### 9.8 参数速查
+
+| 参数 | 用途 |
+|---|---|
+| `--policy` | 共享策略文件或模块（如 `rule_based_submission.agent:Policy`） |
+| `--task-policy` | 单任务专用策略 `TASK_ID=POLICY_SPEC`，可重复 |
+| `--tasks` | 被测任务列表 |
+| `--num-envs` | 普通模式=每变体 episode 数；鲁棒性模式=每任务总 episode 数 |
+| `--info-mode safe/full` | safe=正式测评（仅物品栏+last_reward）；full=本地调试（全量 info） |
+| `--robustness-suite` | 启用 60/30/10 固定比例套件 |
+| `--robustness-stages original/spatial/color` | 仅运行指定阶段 |
+| `--debug-policy` | 启用策略逐步决策日志 |
+| `--visualize-dir` | 保存 GIF 回放目录 |
+| `--visualize-failures-only` | 仅保存失败 episode |
+| `--visualize-stride` | 每隔 N 帧捕获一帧（默认 4） |
+| `--visualize-fps` | GIF 帧率（默认 12） |
+| `--json-out` | 输出详细 JSON 结果文件 |
+| `--seed` | episode 种子起点 |

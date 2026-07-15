@@ -14,18 +14,15 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from nesylink.core.constants import (
-    COLOR_MONSTER_AMBUSHER,
-    COLOR_MONSTER_CHASER,
-    COLOR_MONSTER_PATROLLER,
-    COLOR_NPC,
-    TILE_SIZE,
-)
-from nesylink.core.rendering.sprites import (
+from rule_based_submission.color_vision import (
     BUTTON_DOWN,
     BUTTON_UP,
     CHEST_BAND,
     CHEST_WOOD,
+    COLOR_MONSTER_AMBUSHER,
+    COLOR_MONSTER_CHASER,
+    COLOR_MONSTER_PATROLLER,
+    COLOR_NPC,
     FLOOR_LIGHT,
     HEART_COLOR,
     KEY_COLOR,
@@ -36,6 +33,7 @@ from nesylink.core.rendering.sprites import (
     PLAYER_HAIR,
     PLAYER_TUNIC,
     PLAYER_TUNIC_LIGHT,
+    TILE_SIZE,
     draw_abyss,
     draw_bridge,
     draw_button,
@@ -45,8 +43,8 @@ from nesylink.core.rendering.sprites import (
     draw_gap,
     draw_npc,
     draw_switch,
-    draw_trap,
     draw_text,
+    draw_trap,
     draw_wall,
 )
 
