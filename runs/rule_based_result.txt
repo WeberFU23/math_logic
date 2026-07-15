@@ -1,0 +1,373 @@
+mathematical_logic/task_1 [original]
+  episodes:     60
+  success_rate: 1.000
+  avg_steps:    290.0
+  avg_reward:   127.050
+  variants:     {'default': 60}
+  map_variants: {'default': 60}
+  progress:
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_1 [spatial]
+  episodes:     30
+  success_rate: 1.000
+  avg_steps:    204.3
+  avg_reward:   127.923
+  variants:     {'default': 30}
+  map_variants: {'spatial_a': 10, 'spatial_b': 10, 'spatial_c': 10}
+  progress:
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_1 [color]
+  episodes:     10
+  success_rate: 1.000
+  avg_steps:    290.0
+  avg_reward:   127.050
+  variants:     {'bright': 2, 'dark': 2, 'grayscale': 2, 'high_contrast': 2, 'inverted': 2}
+  map_variants: {'default': 10}
+  progress:
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_2 [original]
+  episodes:     60
+  success_rate: 1.000
+  avg_steps:    161.0
+  avg_reward:   128.390
+  variants:     {'default': 60}
+  map_variants: {'default': 60}
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_2 [spatial]
+  episodes:     30
+  success_rate: 1.000
+  avg_steps:    193.0
+  avg_reward:   142.920
+  variants:     {'default': 30}
+  map_variants: {'spatial_a': 10, 'spatial_b': 10, 'spatial_c': 10}
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_2 [color]
+  episodes:     10
+  success_rate: 1.000
+  avg_steps:    161.0
+  avg_reward:   128.390
+  variants:     {'bright': 2, 'dark': 2, 'grayscale': 2, 'high_contrast': 2, 'inverted': 2}
+  map_variants: {'default': 10}
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_3 [original]
+  episodes:     60
+  success_rate: 1.000
+  avg_steps:    547.0
+  avg_reward:   164.530
+  variants:     {'default': 60}
+  map_variants: {'default': 60}
+  milestones:
+    monster_killed: 1.000
+    key_collected: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_3 [spatial]
+  episodes:     30
+  success_rate: 1.000
+  avg_steps:    646.3
+  avg_reward:   163.537
+  variants:     {'default': 30}
+  map_variants: {'spatial_a': 10, 'spatial_b': 10, 'spatial_c': 10}
+  milestones:
+    monster_killed: 1.000
+    key_collected: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_3 [color]
+  episodes:     10
+  success_rate: 1.000
+  avg_steps:    551.4
+  avg_reward:   164.486
+  variants:     {'bright': 2, 'dark': 2, 'grayscale': 2, 'high_contrast': 2, 'inverted': 2}
+  map_variants: {'default': 10}
+  milestones:
+    monster_killed: 1.000
+    key_collected: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_4 [original]
+  episodes:     60
+  success_rate: 1.000
+  avg_steps:    1080.0
+  avg_reward:   251.200
+  variants:     {'default': 60}
+  map_variants: {'default': 60}
+  milestones:
+    switch_activated: 1.000
+    key_collected: 1.000
+    door_opened: 1.000
+    item_collected: 1.000
+    monster_killed: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    item_collected: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_4 [spatial]
+  episodes:     30
+  success_rate: 1.000
+  avg_steps:    1381.7
+  avg_reward:   276.850
+  variants:     {'default': 30}
+  map_variants: {'spatial_a': 10, 'spatial_b': 10, 'spatial_c': 10}
+  milestones:
+    switch_activated: 1.000
+    key_collected: 1.000
+    door_opened: 1.000
+    item_collected: 1.000
+    monster_killed: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    item_collected: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_4 [color]
+  episodes:     10
+  success_rate: 1.000
+  avg_steps:    1079.6
+  avg_reward:   251.204
+  variants:     {'bright': 2, 'dark': 2, 'grayscale': 2, 'high_contrast': 2, 'inverted': 2}
+  map_variants: {'default': 10}
+  milestones:
+    switch_activated: 1.000
+    key_collected: 1.000
+    door_opened: 1.000
+    item_collected: 1.000
+    monster_killed: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    item_collected: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+
+mathematical_logic/task_5 [original]
+  episodes:     60
+  success_rate: 1.000
+  avg_steps:    1095.0
+  avg_reward:   171.650
+  variants:     {'default': 60}
+  map_variants: {'default': 60}
+  milestones:
+    chest_opened: 1.000
+    key_collected: 1.000
+    gold_collected: 1.000
+    item_collected: 0.000
+    agent_healed: 1.000
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    trap_triggered: 0.000
+    monster_killed: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    agent_healed: 1.000
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+  game_event_totals:
+    chest_opened: 240
+    key_collected: 60
+    gold_collected: 120
+    item_collected: 0
+    agent_healed: 60
+    button_pressed: 60
+    room_changed: 300
+    door_opened: 60
+    trap_triggered: 0
+    monster_killed: 180
+    exit_reached: 300
+    environment_completed: 60
+    world_completed: 60
+
+mathematical_logic/task_5 [spatial]
+  episodes:     30
+  success_rate: 0.000
+  avg_steps:    1066.7
+  avg_reward:   331.550
+  variants:     {'default': 30}
+  map_variants: {'spatial_a': 10, 'spatial_b': 10, 'spatial_c': 10}
+  milestones:
+    chest_opened: 1.000
+    key_collected: 1.000
+    gold_collected: 1.000
+    item_collected: 0.000
+    agent_healed: 0.667
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 0.667
+    trap_triggered: 0.000
+    monster_killed: 0.667
+    exit_reached: 1.000
+    environment_completed: 0.000
+    world_completed: 0.000
+  progress:
+    monster_killed: 0.667
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    agent_healed: 0.667
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 0.667
+    exit_reached: 1.000
+    agent_dead: 1.000
+  game_event_totals:
+    chest_opened: 80
+    key_collected: 30
+    gold_collected: 30
+    item_collected: 0
+    agent_healed: 20
+    button_pressed: 30
+    room_changed: 110
+    door_opened: 20
+    trap_triggered: 0
+    monster_killed: 50
+    exit_reached: 110
+    environment_completed: 0
+    world_completed: 0
+
+mathematical_logic/task_5 [color]
+  episodes:     10
+  success_rate: 1.000
+  avg_steps:    1105.0
+  avg_reward:   171.670
+  variants:     {'bright': 2, 'dark': 2, 'grayscale': 2, 'high_contrast': 2, 'inverted': 2}
+  map_variants: {'default': 10}
+  milestones:
+    chest_opened: 1.000
+    key_collected: 1.000
+    gold_collected: 1.000
+    item_collected: 0.000
+    agent_healed: 1.000
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    trap_triggered: 0.000
+    monster_killed: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+  progress:
+    monster_killed: 1.000
+    key_collected: 1.000
+    chest_opened: 1.000
+    gold_collected: 1.000
+    agent_healed: 1.000
+    button_pressed: 1.000
+    room_changed: 1.000
+    door_opened: 1.000
+    exit_reached: 1.000
+    environment_completed: 1.000
+    world_completed: 1.000
+  game_event_totals:
+    chest_opened: 40
+    key_collected: 10
+    gold_collected: 20
+    item_collected: 0
+    agent_healed: 10
+    button_pressed: 10
+    room_changed: 50
+    door_opened: 10
+    trap_triggered: 0
+    monster_killed: 30
+    exit_reached: 50
+    environment_completed: 10
+    world_completed: 10
