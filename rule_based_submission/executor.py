@@ -25,13 +25,13 @@ def action_for_goal(state: SymbolicState, goal: Goal, preferred_action: int | No
         move = next_move_toward(state, goal, preferred_action=preferred_action)
         return ACTION_NOOP if move is None else move
 
+    if goal.kind == GoalKind.ACTIVATE_BUTTON:
+        if state.player == goal.target:
+            return ACTION_NOOP  # already on the button
+        move = next_move_toward(state, goal, preferred_action=preferred_action)
+        return ACTION_NOOP if move is None else move
+
     if goal.kind == GoalKind.ACTIVATE_SWITCH:
-        # button: step onto it (triggers automatically); switch: press A adjacent
-        if goal.target in state.buttons:
-            if state.player == goal.target:
-                return ACTION_NOOP  # already on the button
-            move = next_move_toward(state, goal, preferred_action=preferred_action)
-            return ACTION_NOOP if move is None else move
         if manhattan(state.player, goal.target) == 1:
             return ACTION_A
         move = next_move_toward(state, goal, preferred_action=preferred_action)

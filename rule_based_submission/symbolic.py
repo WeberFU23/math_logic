@@ -39,6 +39,7 @@ class GoalKind(str, Enum):
     ATTACK_MONSTER = "attack_monster"
     OPEN_CHEST = "open_chest"
     ACTIVATE_SWITCH = "activate_switch"
+    ACTIVATE_BUTTON = "activate_button"
     GO_TO_EXIT = "go_to_exit"
     EXPLORE = "explore"
     WAIT = "wait"
@@ -80,26 +81,15 @@ class SymbolicState:
 
 
 @dataclass
-class RoomSnapshot:
-    visited: bool = False
-    normal_exits: set[Position] = field(default_factory=set)
-    locked_exits: set[Position] = field(default_factory=set)
-    conditional_exits: set[Position] = field(default_factory=set)
-    chests: set[Position] = field(default_factory=set)
-    monsters: set[Position] = field(default_factory=set)
-    switches: set[Position] = field(default_factory=set)
-    buttons: set[Position] = field(default_factory=set)
-
-
-@dataclass
 class AgentMemory:
     task_id: str | None = None
     room: RoomCoord = (0, 0)
     last_goal: Goal | None = None
     opened_chests: set[GlobalPosition] = field(default_factory=set)
+    activated_buttons: set[GlobalPosition] = field(default_factory=set)
     activated_switches: set[GlobalPosition] = field(default_factory=set)
     used_exits: set[GlobalPosition] = field(default_factory=set)
-    room_memory: dict[RoomCoord, RoomSnapshot] = field(default_factory=dict)
+    room_memory: set[RoomCoord] = field(default_factory=set)
     previous_chests: set[Position] = field(default_factory=set)
     previous_monsters: set[Position] = field(default_factory=set)
     previous_player: Position | None = None
@@ -112,9 +102,7 @@ class AgentMemory:
     previous_gold: int = 0
     step_index: int = 0
     room_steps: int = 0
-    switch_cooldown: int = 0
-    sword_acquired_step: int = -1
-    pending_room_delta: RoomCoord | None = None
+    switch_button_cooldown: int = 0
     local_trigger_target: Position | None = None
     local_trigger_step: int = -1
 
@@ -124,6 +112,7 @@ class AgentMemory:
         self.previous_room = (0, 0)
         self.last_goal = None
         self.opened_chests.clear()
+        self.activated_buttons.clear()
         self.activated_switches.clear()
         self.used_exits.clear()
         self.room_memory.clear()
@@ -138,20 +127,17 @@ class AgentMemory:
         self.previous_gold = 0
         self.step_index = 0
         self.room_steps = 0
-        self.switch_cooldown = 0
-        self.sword_acquired_step = -1
-        self.pending_room_delta = None
+        self.switch_button_cooldown = 0
         self.local_trigger_target = None
         self.local_trigger_step = -1
 
     def observe_room_transition(self, player: Position) -> bool:
-        delta = self.pending_room_delta or self._infer_room_delta(player)
+        delta = self._infer_room_delta(player)
         if delta is None:
             return False
         dx, dy = delta
         self._mark_departure_exit_used(delta)
         self.room = (self.room[0] + dx, self.room[1] + dy)
-        self.pending_room_delta = None
         self._mark_entry_exit_used(delta)
         self._clear_previous_room_objects()
         return True
@@ -217,11 +203,13 @@ class AgentMemory:
             elif self.last_goal.kind == GoalKind.ACTIVATE_SWITCH:
                 self.activated_switches.add(globalize(self.room, self.last_goal.target))
                 state.switches.discard(self.last_goal.target)
-                state.buttons.discard(self.last_goal.target)
-                self.switch_cooldown = 40
+                self.switch_button_cooldown = 40
+            elif self.last_goal.kind == GoalKind.ACTIVATE_BUTTON:
+                self.activated_buttons.add(globalize(self.room, self.last_goal.target))
+                self.switch_button_cooldown = 40
         # button: triggers automatically when stepped on
         if state.player in state.buttons:
-            self.activated_switches.add(globalize(self.room, state.player))
+            self.activated_buttons.add(globalize(self.room, state.player))
         if (
             self.last_goal is not None
             and self.last_goal.kind == GoalKind.EXPLORE
@@ -230,19 +218,9 @@ class AgentMemory:
         ):
             self.local_trigger_target = self.last_goal.target
             self.local_trigger_step = self.step_index
-        if state.has_sword and not self.has_sword:
-            self.sword_acquired_step = self.step_index
         self.has_sword = self.has_sword or state.has_sword
         self.has_shield = self.has_shield or state.has_shield
-        room = self.room_memory.setdefault(self.room, RoomSnapshot())
-        room.visited = True
-        room.normal_exits = set(state.normal_exits)
-        room.locked_exits = set(state.locked_exits)
-        room.conditional_exits = set(state.conditional_exits)
-        room.chests = set(state.chests)
-        room.monsters = set(state.monsters)
-        room.switches.update(state.switches)
-        room.buttons.update(state.buttons)
+        self.room_memory.add(self.room)
         self.previous_room = self.room
         self.previous_chests = set(state.chests)
         self.previous_monsters = set(state.monsters)
@@ -252,14 +230,14 @@ class AgentMemory:
         self.previous_gold = state.gold
         self.step_index += 1
         self.room_steps += 1
-        if self.switch_cooldown > 0:
-            self.switch_cooldown -= 1
+        if self.switch_button_cooldown > 0:
+            self.switch_button_cooldown -= 1
         return transitioned
 
     def _clear_previous_room_objects(self) -> None:
         self.last_goal = None
         self.room_steps = 0
-        self.switch_cooldown = 0
+        self.switch_button_cooldown = 0
         self.previous_chests.clear()
         self.previous_monsters.clear()
         self.previous_room = self.room
