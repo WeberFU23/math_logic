@@ -1,14 +1,15 @@
 # Rule-based 与 RL-based Agent 的 Lean 形式化文件说明
 
 `formalization/` 从视觉抽取后的符号状态开始，对公共环境以及两条 Agent 路线分别进行形式化。
-按照课程大作业的证明内容，文档分为两个模块：
+按照课程大作业的证明内容，文档分为三个模块：
 
 - **模块一：公共环境形式化**，说明状态、对象、动作、转移、失败条件、任务目标和安全轨迹；
-- **模块二：策略形式化与证明**，分别说明 Rule-based 与 RL-based 的决策接口、安全约束和五关证书。
+- **模块二：策略形式化与证明**，分别说明 Rule-based 与 RL-based 的决策接口、安全约束和五关证书；
+- **模块三：强化性质证明**，说明轨迹闭包、进度单调性、mask 可靠性、shield 性质和可验证搜索。
 
 ## 文件组成与依赖
 
-`formalization/` 包含五个 Lean 文件：
+`formalization/` 包含六个 Lean 文件：
 
 | 文件 | 内容 |
 | --- | --- |
@@ -17,6 +18,7 @@
 | `Rule_based_TaskProofs.lean` | 规则路线在 Task 1-5 关键检查点上的目标证明和通关证书 |
 | `RL_based_Strategy.lean` | RL 特征编码、option 解析、基础与 Task 5 mask、primitive shield |
 | `RL_based_TaskProofs.lean` | RL 路线在 Task 1-5 关键检查点上的 mask 证明和通关证书 |
+| `Additional_Proofs.lean` | 两条路线共用的强化不变量、接口定理以及可靠且完备的有界搜索证明 |
 
 依赖关系为：
 
@@ -26,6 +28,10 @@ formalization.Environment
 │   └── formalization.Rule_based_TaskProofs
 └── formalization.RL_based_Strategy
     └── formalization.RL_based_TaskProofs
+
+formalization.Additional_Proofs
+├── imports formalization.Rule_based_TaskProofs
+└── imports formalization.RL_based_TaskProofs
 ```
 
 主要命名空间：
@@ -85,7 +91,7 @@ wait, up, down, left, right, pressA, pressB, useExit, envTick
 
 ### 3. SymbolicState
 
-`SymbolicState` 是五个文件共用的环境状态，主要字段如下：
+`SymbolicState` 是全部文件共用的环境状态，主要字段如下：
 
 - 玩家：`player`、`playerCenterPx`、`room`、`facing`；
 - 地图对象：`walls`、`chests`、`monsters`、`traps`、`buttons`、`switches`、`gaps`、`npcs`；
@@ -612,6 +618,122 @@ rlTask5Certificate
 `rl_task1_completed` 至 `rl_task5_completed` 分别给出 `CompletedBy`。`RLTaskSuite` 把五个证书保存到
 一个结构中，`all_rl_tasks_completed` 同时给出五关完成结论。
 
+## 模块三：强化性质证明
+
+本模块对应 `Additional_Proofs.lean`。该文件同时导入两条路线的任务证明，并在已有环境、策略接口和
+通关证书之上补充可复用的整体性质。
+
+### 1. 安全轨迹闭包
+
+| 定理 | 结论 |
+| --- | --- |
+| `safeFullExec_final_not_failed` | 任意 `SafeFullExec` 的最终状态都不满足 `FailedState` |
+| `safeFullExec_append` | 两段首尾相接的安全完整轨迹可以拼接，结果仍是 `SafeFullExec` |
+
+`safeFullExec_append` 使分段证明可以组合成整条路线；中间状态由第一段终点和第二段起点的类型统一。
+
+### 2. 里程碑和世界完成状态单调
+
+`ProgressLe before after` 同时比较六个累计字段：`keysCollected`、`chestsOpened`、
+`monstersKilled`、`buttonsPressed`、`switchesActivated` 和 `roomsChanged`。当前钥匙数 `keys`
+没有放入该关系，因为钥匙可以被锁门合法消耗。
+
+| 定理组 | 结论 |
+| --- | --- |
+| `progressLe_refl`, `progressLe_trans` | `ProgressLe` 具有自反性和传递性 |
+| `envStep_progressLe`, `fullEnvStep_progressLe` | 轻量一步和完整一步都不会降低累计里程碑 |
+| `applyLoot_progressLe`, `openChestObjectState_progressLe`, `attackMonsterObjectState_progressLe` | 拾取、开箱和攻击对象不会降低累计里程碑 |
+| `takeDamage_progressLe`, `task5TimedDrainState_progressLe` | 受伤和 Task 5 周期掉血不改变累计里程碑 |
+| `fullExec_progressLe`, `safeFullExec_progressLe` | 完整多步轨迹及安全轨迹保持累计进度单调 |
+
+`WorldCompletedMonotone before after` 表示一旦 `before.worldCompleted = true`，则
+`after.worldCompleted = true`。`worldCompletedMonotone_refl`、`worldCompletedMonotone_trans`、
+`envStep_worldCompletedMonotone`、`fullEnvStep_worldCompletedMonotone`、
+`fullExec_worldCompletedMonotone` 和 `safeFullExec_worldCompletedMonotone` 把这一性质从一步提升到整条轨迹。
+
+### 3. Action mask 非空性、保守性和可靠性
+
+`BaseMaskHasEnabled` 与 `Task5MaskHasEnabled` 分别枚举七动作和九动作接口中的所有 option。
+
+| 定理组 | 结论 |
+| --- | --- |
+| `normalizedMask_has_enabled`, `normalizedMask_enabled_exists` | 任意基础原始 mask 经过优先级归一化后至少保留一个可选 option |
+| `task5NormalizedMask_has_enabled`, `task5NormalizedMask_enabled_exists` | 任意 Task 5 上下文的最终九位 mask 至少有一个可选 option |
+| `normalizedMask_nonwait_conservative` | 最终基础 mask 中被启用的非等待 option 在原始 mask 中也已启用 |
+| `task5NormalizedMask_nonwait_conservative` | Task 5 最终 mask 不会凭空创建非等待 option |
+
+等待是唯一允许由兜底逻辑重新启用的动作，因此保守性定理显式排除 `wait`。
+
+`BaseRawMaskSound state raw` 和 `Task5RawMaskSound state context` 规定：原始 mask 中为真的 option
+必须满足公共环境 readiness。由此证明：
+
+- `normalizedMask_sound` 与 `task5NormalizedMask_sound`：优先级过滤后的最终 mask 仍然可靠；
+- `mask_respecting_policy_selects_ready` 与 `task5_mask_respecting_policy_selects_ready`：尊重 mask 的策略只能选到 ready option；
+- `mask_respecting_policy_ready_resolution` 与 `task5_mask_respecting_policy_ready_resolution`：策略输出同时具有 resolver 结果、目标兼容性和环境 readiness。
+
+这些结论连接了“环境生成原始 mask”“优先级过滤”“模型选 option”“解析成符号目标”四个阶段。
+
+### 4. 两类 safety shield 的强化性质
+
+RL primitive shield 新增三个代数和安全定理：
+
+- `shield_preserves_safe_move`：原始安全移动保持不变；
+- `shield_idempotent`：对同一状态重复应用 shield 不会继续改变结果；
+- `shield_move_output_safe`：shield 若最终仍输出移动，则目标 tile 满足 `safeTile`。
+
+Rule-based shield 使用 `AgentControllableAction` 限定 agent 可直接产生的等待、A/B 交互和四向移动。
+`shielded_total` 证明这些输入总有输出，`shielded_deterministic` 证明输出唯一，
+`shielded_exists_unique` 把两者组合为存在且唯一的输出结论。`exitPushAllowed_not_walkable`
+说明合法边界出门推动作与普通 `isWalkable` 分支互斥。
+
+### 5. 感知、出口和路线证书接口
+
+| 定理组 | 结论 |
+| --- | --- |
+| `color_mode_base_features_invariant`, `color_mode_task5_features_invariant` | 在 `ColorModeInvariant` 契约下，不同颜色模式产生完全相同的基础/Task 5 特征 |
+| `color_mode_base_policy_output_invariant`, `color_mode_task5_policy_output_invariant` | 相同特征和 mask 进一步推出策略 option 输出相同 |
+| `buttonGate_exit_requires_pressed` | 可用按钮门要求指定按钮已被按下 |
+| `allMonstersAndKey_exit_requires_resources` | 清怪钥匙门要求钥匙数量满足门槛且当前怪物列表为空 |
+| `itemGate_exit_requires_item` | 装备门可用时，背包必须包含对应装备 |
+| `fullEnvStep_useExit_has_usable_exit` | 任意 `useExit` 完整转移都能反推出一个满足 `canUseExitObject` 的出口对象 |
+
+`CertificatesShareTrace` 比较两份 `TaskCertificate` 的 `plan` 和 `final`。五个
+`taskN_route_certificates_share_trace` 以及 `all_route_certificates_share_trace` 证明 Rule-based 与
+RL-based 的 Task 1-5 证书使用相同公共动作轨迹并到达相同最终状态。
+
+### 6. 可计算搜索的可靠性和完备性
+
+`safeActionsFrom` 使用可判定的 `isWalkable` 过滤四向移动，`safeSuccessors` 计算某位置的一步安全后继。
+`breadthFrontier state depth` 对自然数 `depth` 做结构递归，枚举从玩家位置恰好执行 `depth` 步
+安全移动后能够到达的位置，因此构造过程必然终止。
+
+核心等价定理为：
+
+```lean
+target ∈ breadthFrontier state depth ↔ PositionReachable state depth target
+```
+
+对应的 Lean 名称是 `mem_breadthFrontier_iff_positionReachable`。它直接导出：
+
+- `breadthFrontier_complete`：所有恰好 `depth` 步可达的位置都在 frontier 中；
+- `breadthFrontier_sound`：frontier 中每个位置都确实恰好 `depth` 步可达；
+- `breadth_search_complete`：目标集合中存在可达位置时，搜索必然发现目标；
+- `breadth_search_sound`：搜索报告发现目标时，确实存在可达目标；
+- `breadth_search_sound_and_complete`：搜索发现与 `PlannerGoalReachable` 等价。
+
+`breadthFindsGoal` 是可直接计算的 Bool 判定器，`breadthFindsGoal_eq_true_iff` 把其返回值连接到
+`PlannerGoalReachable`。`SafeMovePlan` 保存逐步安全的动作计划，
+`positionReachable_has_safeMovePlan` 从可达证明提取等长计划，`safeMovePlan_exec` 则证明该计划
+能按公共 `Exec` 语义执行到目标位置。
+
+`VerifiedSearchResult` 把计划、目标成员关系和安全见证封装在同一结构中。
+`verifiedSearchResult_sound` 证明任何结果都可执行且到达目标；
+`breadth_found_has_verified_plan` 从搜索命中构造指定深度的结果证书；
+`verified_search_result_iff_reachable` 给出“存在可验证搜索结果”与“存在某个深度的可达目标”等价。
+
+这里的完备性严格针对固定符号状态、固定深度和 `PositionReachable` 定义的安全移动图，
+不等同于任意地图上的策略通关完备性，也不涉及 PPO 训练收敛。
+
 ## 证明结论汇总
 
 公共环境层证明以下内容：
@@ -641,6 +763,17 @@ RL-based 策略层额外证明：
 - 尊重 mask 的策略输出可解析为兼容目标；
 - primitive shield 后的移动安全；
 - 五关关键状态的 option 同时满足 mask、解析和环境 readiness。
+
+强化性质层进一步证明：
+
+- 安全完整轨迹可拼接，最终状态必然非失败；
+- 六个累计任务里程碑和 `worldCompleted` 沿完整执行保持单调；
+- 基础与 Task 5 最终 mask 始终非空，非等待位不会脱离原始 mask 被创建；
+- 原始 mask 可靠时，最终 mask 以及尊重 mask 的策略选择都满足环境 readiness；
+- RL shield 保持安全移动且幂等，Rule-based shield 对可控动作存在唯一输出；
+- 颜色模式不变性可提升到特征与策略输出；结构化出口转移满足门的必要前置条件；
+- 两条路线的五关证书共享相同计划和最终状态；
+- 固定深度安全移动搜索相对 `PositionReachable` 可靠且完备，并能提取可执行计划证书。
 
 ## 形式化边界
 
@@ -679,6 +812,7 @@ lake env lean .\formalization\Rule_based_Strategy.lean
 lake env lean .\formalization\Rule_based_TaskProofs.lean
 lake env lean .\formalization\RL_based_Strategy.lean
 lake env lean .\formalization\RL_based_TaskProofs.lean
+lake env lean .\formalization\Additional_Proofs.lean
 ```
 
 检查未完成证明占位：
@@ -698,6 +832,6 @@ rg -n "TaskCertificate|all_rule_task_certificates|all_rl_tasks_completed" `
 有效结果应满足：
 
 1. `lake build formalization` 退出码为 0；
-2. 五个逐文件 Lean 命令均无 error；
+2. 六个逐文件 Lean 命令均无 error；
 3. `sorry|admit|axiom` 扫描无匹配；
 4. 两条路线都能找到 Task 1-5 的 `TaskCertificate` 和总完成定理。
