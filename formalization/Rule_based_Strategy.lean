@@ -8,11 +8,15 @@ open MathLogic.Formalization
 本层依赖 `Environment.lean` 中已经定义好的环境语义。
 它不重新定义环境，只形式化当前规则版 Agent 中可验证的策略层：
 
-1. 规则目标选择 `RuleGoal`；
-2. BFS/planner 输出第一步的安全契约 `PlannerStep`；
-3. executor 从目标生成动作的关系 `ActionForGoal`；
-4. safety shield 的过滤关系 `Shielded`；
-5. 规则目标、执行器、shield 串联后的安全性定理。
+1. 关系式规则说明 `RuleGoal` 与可执行选择器 `ruleBasedChooseGoal`；
+2. 实际选择器满足的具体优先级契约 `RulePriorityContract`；
+3. BFS/planner 输出第一步的安全契约 `PlannerStep`；
+4. executor 从目标生成动作的关系 `ActionForGoal`；
+5. safety shield 的过滤关系 `Shielded`；
+6. 确定的 `AgentMemory` 更新；
+7. 串联选择器、executor、shield、环境与记忆的 `RulePolicyStep` 和
+   `RulePolicyExec`；
+8. 携带策略生成证明的 `RuleTaskCertificate`。
 
 本文件对应 Python 文件：
 
@@ -110,8 +114,8 @@ def roomExhaustedBeforeCombat (s : SymbolicState) (m : AgentMemory) : Prop :=
 Python 策略只有在这个条件成立时才会选择条件门出口。
 -/
 def visibleButtonsSatisfied (s : SymbolicState) : Prop :=
-  ∀ button, button ∈ s.buttons →
-    button ∈ s.pressedButtons ∨ button ∈ s.activated
+  s.buttons.all (fun button =>
+    decide (button ∈ s.pressedButtons ∨ button ∈ s.activated)) = true
 
 def conditionalDoorReady (s : SymbolicState) : Prop :=
   visibleButtonsSatisfied s ∧
@@ -207,6 +211,40 @@ def PlannerCanReach (s : SymbolicState) (target : Position) : Prop :=
 theorem planner_can_reach_player (s : SymbolicState) :
     PlannerCanReach s s.player := by
   exact ⟨0, PositionReachable.zero⟩
+
+/-!
+【策略选择器使用的有限可计算可达性】
+Python `is_reachable` 在 10×8 棋盘上运行 BFS。这里用累计前沿计算同一类
+安全可达位置；80 轮覆盖有限棋盘上所有不重复位置组成的简单路径。
+-/
+instance policy_isWalkable_decidable
+    (state : SymbolicState) (position : Position) :
+    Decidable (isWalkable state position) := by
+  unfold isWalkable terrainPassable inBounds
+  infer_instance
+
+def policySafeSuccessors
+    (state : SymbolicState) (position : Position) : List Position :=
+  (movementActions.filter fun action =>
+    decide (isWalkable { state with player := position }
+      (nextPosition position action))).map (nextPosition position)
+
+def policyReachablePositions (state : SymbolicState) : Nat → List Position
+  | 0 => [state.player]
+  | depth + 1 =>
+      let reached := policyReachablePositions state depth
+      (reached ++ reached.flatMap (policySafeSuccessors state)).eraseDups
+
+def policyCanReachAny
+    (state : SymbolicState) (targets : List Position) : Bool :=
+  (policyReachablePositions state 80).any fun position =>
+    decide (position ∈ targets)
+
+def policyApproachTiles (position : Position) : List Position :=
+  [nextPosition position Action.up,
+    nextPosition position Action.down,
+    nextPosition position Action.left,
+    nextPosition position Action.right]
 
 /-!
 【规则目标选择关系】
@@ -373,115 +411,423 @@ theorem rule_goal_admissible
       simp [GoalAdmissible]
 
 /-!
-【可达未开宝箱】
-该谓词对应最终 `strategy.py` 的第二优先级；只统计记忆中未打开且 planner 可达的宝箱。
+【带合法性证明的规则目标】
+具体选择器只从该子类型返回目标，因此合法性不是调用者提供的假设。
 -/
-def HasReachableFreshChest (s : SymbolicState) (m : AgentMemory) : Prop :=
-  ∃ chest,
-    chest ∈ s.chests ∧
-    globalize s.room chest ∉ m.openedChests ∧
-    PlannerCanReach s chest
+abbrev VerifiedRuleGoal (s : SymbolicState) (m : AgentMemory) :=
+  { goal : Goal // GoalAdmissible s m goal }
+
+instance adjacent_decidable (first second : Position) :
+    Decidable (adjacent first second) := by
+  unfold adjacent manhattan absDiff
+  infer_instance
+
+instance inFront_decidable (s : SymbolicState) (position : Position) :
+    Decidable (inFront s position) := by
+  unfold inFront facingTarget
+  infer_instance
+
+instance exitCondition_decidable (s : SymbolicState) (exit : Exit) :
+    Decidable (exitCondition s exit) := by
+  unfold exitCondition
+  split <;> infer_instance
+
+instance canOpenChestObject_decidable (s : SymbolicState) (chest : Chest) :
+    Decidable (canOpenChestObject s chest) := by
+  unfold canOpenChestObject
+  infer_instance
+
+
+instance canUseExitObject_decidable (s : SymbolicState) (exit : Exit) :
+    Decidable (canUseExitObject s exit) := by
+  unfold canUseExitObject
+  infer_instance
+instance healthSafe_decidable (s : SymbolicState) :
+    Decidable (healthSafe s) := by
+  unfold healthSafe
+  cases s.health <;> infer_instance
+
+instance conditionalDoorReady_decidable (s : SymbolicState) :
+    Decidable (conditionalDoorReady s) := by
+  unfold conditionalDoorReady visibleButtonsSatisfied
+  infer_instance
+
+instance exitGoalAdmissible_decidable (s : SymbolicState) (position : Position) :
+    Decidable (ExitGoalAdmissible s position) := by
+  unfold ExitGoalAdmissible
+  infer_instance
+instance goalAdmissible_decidable
+    (s : SymbolicState) (m : AgentMemory) (goal : Goal) :
+    Decidable (GoalAdmissible s m goal) := by
+  unfold GoalAdmissible
+  split <;> infer_instance
+
+def firstAdmissibleGoal
+    (s : SymbolicState) (m : AgentMemory) :
+    List Goal → Option (VerifiedRuleGoal s m)
+  | [] => none
+  | goal :: rest =>
+      if h : GoalAdmissible s m goal then
+        some ⟨goal, h⟩
+      else
+        firstAdmissibleGoal s m rest
 
 /-!
-【可达未触发按钮】
-按钮只在当前房间存在条件门时构成高层进度。
+【当前房间候选对象】
+公共参考状态会保留多房间结构化对象；选择器只把 `room` 等于当前房间的
+对象送入优先链，与 Python 每帧只接收当前房间感知结果的行为一致。
 -/
-def HasReachableFreshButton (s : SymbolicState) (m : AgentMemory) : Prop :=
-  s.conditionalExits ≠ [] ∧
-  ∃ button,
-    button ∈ s.buttons ∧
-    globalize s.room button ∉ m.activatedButtons ∧
-    PlannerCanReach s button
+def currentRoomChestPositions (s : SymbolicState) : List Position :=
+  s.chestObjects.filterMap fun chest =>
+    if chest.room = s.room ∧ chest.pos ∈ s.chests ∧
+        (chest.completesTask = false ∨ s.monsters = []) then
+      some chest.pos
+    else
+      none
+
+def currentRoomMonsterPositions (s : SymbolicState) : List Position :=
+  s.monsterObjects.filterMap fun monster =>
+    if monster.room = s.room ∧ monster.pos ∈ s.monsters then
+      some monster.pos
+    else
+      none
+
+def currentRoomExitObjects (s : SymbolicState) : List Exit :=
+  s.exitObjects.filter fun exit => decide (exit.sourceRoom = s.room)
+
+def currentRoomExitPositions (s : SymbolicState) : List Position :=
+  ((currentRoomExitObjects s).map fun exit => exit.pos).eraseDups
+
+def currentRoomButtonPositions (s : SymbolicState) : List Position :=
+  s.buttons.filter fun position => decide (buttonVisibleAt s position)
+
+def currentRoomSwitchPositions (s : SymbolicState) : List Position :=
+  s.switches.filter fun position => decide (switchVisibleAt s position)
+
+def goalsAt (kind : GoalKind) (positions : List Position) : List Goal :=
+  positions.map fun position => { kind := kind, target := some position }
+
+def reachableInteractionPositions
+    (s : SymbolicState) (positions : List Position) : List Position :=
+  positions.filter fun position =>
+    policyCanReachAny s (policyApproachTiles position)
+
+def reachableTilePositions
+    (s : SymbolicState) (positions : List Position) : List Position :=
+  positions.filter fun position => policyCanReachAny s [position]
+
+def unusedExitPositions
+    (s : SymbolicState) (m : AgentMemory)
+    (positions : List Position) : List Position :=
+  positions.filter fun position =>
+    decide (globalize s.room position ∉ m.usedExits)
+
+def policyExitCondition (s : SymbolicState) (exit : Exit) : Bool :=
+  match exit.kind with
+  | ExitKind.normal => true
+  | ExitKind.lockedKey need _consume => decide (need ≤ s.keys)
+  | ExitKind.allMonstersAndKey need _consume =>
+      decide (need ≤ s.keys ∧ s.monsters = [])
+  | ExitKind.buttonGate button => decide (button ∈ s.pressedButtons)
+  | ExitKind.itemGate item => decide (item ∈ s.items)
+
+def readyExitPositions
+    (s : SymbolicState) (positions : List Position) : List Position :=
+  positions.filter fun position =>
+    (currentRoomExitObjects s).any fun exit =>
+      decide (exit.pos = position) && policyExitCondition s exit
+
+
 
 /-!
-【可达新出口】
-这里统一描述尚未写入 `usedExits` 的普通、锁门或已满足前置条件的条件出口。
+【各优先级候选】
+这些函数与 Python `choose_goal` 中的候选集合一一对应。目标排序沿用
+`exitObjects/chestObjects/monsterObjects` 的确定顺序；每类候选再由
+`firstAdmissibleGoal` 检查钥匙、血量、按钮记忆和冷却等条件。
 -/
-def HasReachableNewExit (s : SymbolicState) (m : AgentMemory) : Prop :=
-  ∃ exit,
-    ExitGoalAdmissible s exit ∧
-    globalize s.room exit ∉ m.usedExits ∧
-    PlannerCanReach s exit
+def chestChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.openChest <|
+      reachableInteractionPositions s (currentRoomChestPositions s)
+
+def monsterChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.attackMonster <|
+      reachableInteractionPositions s (currentRoomMonsterPositions s)
+
+def conditionalExitPositions (s : SymbolicState) : List Position :=
+  ((currentRoomExitObjects s).filterMap fun exit =>
+    match exit.kind with
+    | ExitKind.allMonstersAndKey _ _ => some exit.pos
+    | ExitKind.buttonGate _ => some exit.pos
+    | ExitKind.itemGate _ => some exit.pos
+    | _ => none).eraseDups
+
+def lockedExitPositions (s : SymbolicState) : List Position :=
+  ((currentRoomExitObjects s).filterMap fun exit =>
+    match exit.kind with
+    | ExitKind.lockedKey _ _ => some exit.pos
+    | _ => none).eraseDups
+
+def normalExitPositions (s : SymbolicState) : List Position :=
+  ((currentRoomExitObjects s).filterMap fun exit =>
+    match exit.kind with
+    | ExitKind.normal => some exit.pos
+    | _ => none).eraseDups
 
 /-!
-【可达本次访问未使用的开关】
-开关受 40 tick 冷却和本次房间访问记忆约束。
+【机关遮蔽的出口】
+参考关卡把“按开关”和随后穿门压缩在同一符号位置。Python 感知在开关尚未
+触发时把该 tile 识别为开关，而不会同时把底层出口送入 `choose_goal`。
+这里利用跨房间开关记忆表达同一可见性规则；触发后出口才进入候选集合。
 -/
-def HasReachableFreshSwitch (s : SymbolicState) (m : AgentMemory) : Prop :=
-  m.switchButtonCooldown = 0 ∧
-  ∃ switch,
-    switch ∈ s.switches ∧
-    globalize s.room switch ∉ m.visitActivatedSwitches ∧
-    PlannerCanReach s switch
+def exitVisibleToSelector
+    (s : SymbolicState) (m : AgentMemory) (position : Position) : Bool :=
+  decide (position ∉ currentRoomSwitchPositions s ∨
+    globalize s.room position ∈ m.activatedSwitches)
+
+def selectorVisibleExitPositions
+    (s : SymbolicState) (m : AgentMemory) (positions : List Position) :
+    List Position :=
+  positions.filter (exitVisibleToSelector s m)
+
+def buttonChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  if conditionalExitPositions s = [] then
+    none
+  else
+    firstAdmissibleGoal s m <|
+      goalsAt GoalKind.activateButton <|
+        reachableTilePositions s (currentRoomButtonPositions s)
+
+def conditionalMonsterChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  if conditionalExitPositions s ≠ [] ∧ currentRoomButtonPositions s = [] then
+    monsterChoice s m
+  else
+    none
+
+def requiredMonsterChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  if currentRoomChestPositions s = [] ∧
+      currentRoomButtonPositions s = [] ∧
+      currentRoomSwitchPositions s = [] ∧
+      unusedExitPositions s m (currentRoomExitPositions s) = [] then
+    monsterChoice s m
+  else
+    none
+
+def conditionalExitChoice
+    (s : SymbolicState) (m : AgentMemory) (onlyUnused : Bool) :
+    Option (VerifiedRuleGoal s m) :=
+  let positions := readyExitPositions s <|
+    selectorVisibleExitPositions s m (conditionalExitPositions s)
+  let candidates :=
+    if onlyUnused then unusedExitPositions s m positions else positions
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.goToExit (reachableTilePositions s candidates)
+
+def lockedExitChoice
+    (s : SymbolicState) (m : AgentMemory) (onlyUnused : Bool) :
+    Option (VerifiedRuleGoal s m) :=
+  let positions := readyExitPositions s <|
+    selectorVisibleExitPositions s m (lockedExitPositions s)
+  let candidates :=
+    if onlyUnused then unusedExitPositions s m positions else positions
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.goToExit (reachableTilePositions s candidates)
+
+def normalExitChoice
+    (s : SymbolicState) (m : AgentMemory) (onlyUnused : Bool) :
+    Option (VerifiedRuleGoal s m) :=
+  let positions := readyExitPositions s <|
+    selectorVisibleExitPositions s m (normalExitPositions s)
+  let candidates :=
+    if onlyUnused then unusedExitPositions s m positions else positions
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.goToExit (reachableTilePositions s candidates)
+
+
+
+def switchChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.activateSwitch <|
+      reachableInteractionPositions s (currentRoomSwitchPositions s)
+
+def exploreChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  firstAdmissibleGoal s m <|
+    goalsAt GoalKind.explore <|
+      movementActions.filterMap fun action =>
+        let target := nextPosition s.player action
+        if isWalkable s target then some target else none
 
 /-!
-【已知具体进度】
-恢复动作 `explore/wait` 只能在宝箱、按钮、新出口和开关均不可用时出现。
+【sticky goal 的具体判定】
+房间切换会在记忆更新中清空 `lastGoal`；同一房间内则只在对象仍属于当前
+感知、目标仍合法且按钮尚未踩中时继续上一目标。
 -/
-def HasConcreteProgress (s : SymbolicState) (m : AgentMemory) : Prop :=
-  HasReachableFreshChest s m ∨
-  HasReachableFreshButton s m ∨
-  HasReachableNewExit s m ∨
-  HasReachableFreshSwitch s m
+def goalStillVisible (s : SymbolicState) (goal : Goal) : Bool :=
+  match goal.kind, goal.target with
+  | GoalKind.openChest, some position =>
+      decide (position ∈ currentRoomChestPositions s)
+  | GoalKind.attackMonster, some position =>
+      decide (position ∈ currentRoomMonsterPositions s)
+  | GoalKind.activateButton, some position =>
+      decide (position ∈ currentRoomButtonPositions s ∧
+        position ≠ s.player ∧ position ∉ s.pressedButtons)
+  | GoalKind.activateSwitch, some position =>
+      decide (position ∈ currentRoomSwitchPositions s)
+  | GoalKind.goToExit, some position =>
+      decide (position ∈ currentRoomExitPositions s)
+  | GoalKind.explore, some position =>
+      decide (isWalkable s position ∧ position ≠ s.player)
+  | _, _ => false
+
+def continuingGoalChoice (s : SymbolicState) (m : AgentMemory) :
+    Option (VerifiedRuleGoal s m) :=
+  match m.lastGoal with
+  | none => none
+  | some goal =>
+      if goalStillVisible s goal then
+        firstAdmissibleGoal s m [goal]
+      else
+        none
+
+/-!
+【无 sticky 时的具体十二级优先链】
+分支顺序对应 Python `RuleBasedPolicy.choose_goal`：宝箱、必要清怪、条件门
+按钮/怪物/新出口、新锁门、新普通门、开关、普通门回退、条件门回退、
+锁门回退、探索和等待。
+-/
+def chooseNewVerifiedRuleGoal
+    (s : SymbolicState) (m : AgentMemory) : VerifiedRuleGoal s m :=
+  match chestChoice s m with
+  | some goal => goal
+  | none =>
+    match requiredMonsterChoice s m with
+    | some goal => goal
+    | none =>
+      match buttonChoice s m with
+      | some goal => goal
+      | none =>
+        match conditionalMonsterChoice s m with
+        | some goal => goal
+        | none =>
+          match conditionalExitChoice s m true with
+          | some goal => goal
+          | none =>
+            match lockedExitChoice s m true with
+            | some goal => goal
+            | none =>
+              match normalExitChoice s m true with
+              | some goal => goal
+              | none =>
+                match switchChoice s m with
+                | some goal => goal
+                | none =>
+                  match normalExitChoice s m false with
+                  | some goal => goal
+                  | none =>
+                    match conditionalExitChoice s m false with
+                    | some goal => goal
+                    | none =>
+                      match lockedExitChoice s m false with
+                      | some goal => goal
+                      | none =>
+                        match exploreChoice s m with
+                        | some goal => goal
+                        | none =>
+                          ⟨{ kind := GoalKind.wait, target := none }, by
+                            simp [GoalAdmissible]⟩
+
+def chooseVerifiedRuleGoal
+    (s : SymbolicState) (m : AgentMemory) : VerifiedRuleGoal s m :=
+  match continuingGoalChoice s m with
+  | some goal => goal
+  | none => chooseNewVerifiedRuleGoal s m
 
 abbrev RuleSelector := SymbolicState → AgentMemory → Goal
 
 /-!
-【十二级优先链契约】
-`RulePriorityContract selector` 是最终 Python 目标选择器的可验证接口：
-输出始终合法，宝箱和条件门按钮具有支配优先级，高层战斗只在房间耗尽或条件门要求时出现，
-出口不能越过未开宝箱，探索/等待只能作为恢复动作。
-紧急近战反射在下面单独建模，不受高层战斗守卫限制。
+【Python 规则选择器的 Lean 实现】
+该函数不是契约参数，而是可执行的具体选择器。
+-/
+def ruleBasedChooseGoal : RuleSelector := fun state memory =>
+  (chooseVerifiedRuleGoal state memory).1
+
+/-!
+【实际选择器输出合法】
+合法性直接来自 `chooseVerifiedRuleGoal` 携带的证明。
+-/
+theorem ruleBasedChooseGoal_admissible
+    (s : SymbolicState) (m : AgentMemory) :
+    GoalAdmissible s m (ruleBasedChooseGoal s m) :=
+  (chooseVerifiedRuleGoal s m).2
+
+/-!
+【具体优先级契约】
+契约同时要求实现就是 `ruleBasedChooseGoal`、输出合法，并精确规定 sticky
+分支和重新规划分支。因而不能再用一个未实例化的任意 selector 代替实际策略。
 -/
 structure RulePriorityContract (selector : RuleSelector) : Prop where
+  implementation : selector = ruleBasedChooseGoal
   admissible : ∀ s m, GoalAdmissible s m (selector s m)
-  chestFirst : ∀ s m, HasReachableFreshChest s m →
-    (selector s m).kind = GoalKind.openChest
-  conditionalButtonFirst : ∀ s m, ¬ HasReachableFreshChest s m →
-    HasReachableFreshButton s m →
-    (selector s m).kind = GoalKind.activateButton
-  combatGuard : ∀ s m,
-    (selector s m).kind = GoalKind.attackMonster →
-    roomExhaustedBeforeCombat s m ∨
-      (s.conditionalExits ≠ [] ∧ noVisibleButtons s)
-  exitGuard : ∀ s m,
-    (selector s m).kind = GoalKind.goToExit →
-    ¬ HasReachableFreshChest s m
-  recoveryGuard : ∀ s m,
-    ((selector s m).kind = GoalKind.explore ∨
-      (selector s m).kind = GoalKind.wait) →
-    ¬ HasConcreteProgress s m
+  stickyFirst : ∀ s m goal,
+    continuingGoalChoice s m = some goal → selector s m = goal.1
+  restartPriority : ∀ s m,
+    continuingGoalChoice s m = none →
+      selector s m = (chooseNewVerifiedRuleGoal s m).1
+
+theorem ruleBasedChooseGoal_priorityContract :
+    RulePriorityContract ruleBasedChooseGoal := by
+  refine
+    { implementation := rfl
+      admissible := ruleBasedChooseGoal_admissible
+      stickyFirst := ?_
+      restartPriority := ?_ }
+  · intro s m goal hgoal
+    simp [ruleBasedChooseGoal, chooseVerifiedRuleGoal, hgoal]
+  · intro s m hnone
+    simp [ruleBasedChooseGoal, chooseVerifiedRuleGoal, hnone]
 
 /-!
-【定理：有可达宝箱时严格优先选择宝箱】
+【定理：无 sticky 时宝箱分支严格优先】
 -/
-theorem selector_chest_first
-    {selector : RuleSelector} (h : RulePriorityContract selector)
+theorem concrete_selector_chest_first
     {s : SymbolicState} {m : AgentMemory}
-    (hchest : HasReachableFreshChest s m) :
-    (selector s m).kind = GoalKind.openChest :=
-  h.chestFirst s m hchest
+    (hsticky : continuingGoalChoice s m = none)
+    {goal : VerifiedRuleGoal s m}
+    (hchest : chestChoice s m = some goal) :
+    ruleBasedChooseGoal s m = goal.1 := by
+  simp [ruleBasedChooseGoal, chooseVerifiedRuleGoal, hsticky,
+    chooseNewVerifiedRuleGoal, hchest]
 
 /-!
-【定理：有具体进度时不能等待】
+【定理：前三类均不可用时，条件门按钮分支优先】
 -/
-theorem selector_cannot_wait_with_progress
-    {selector : RuleSelector} (h : RulePriorityContract selector)
+theorem concrete_selector_conditional_button_first
     {s : SymbolicState} {m : AgentMemory}
-    (hprogress : HasConcreteProgress s m) :
-    (selector s m).kind ≠ GoalKind.wait := by
-  intro hwait
-  exact (h.recoveryGuard s m (Or.inr hwait)) hprogress
+    (hsticky : continuingGoalChoice s m = none)
+    (hchest : chestChoice s m = none)
+    (hrequired : requiredMonsterChoice s m = none)
+    {goal : VerifiedRuleGoal s m}
+    (hbutton : buttonChoice s m = some goal) :
+    ruleBasedChooseGoal s m = goal.1 := by
+  simp [ruleBasedChooseGoal, chooseVerifiedRuleGoal, hsticky,
+    chooseNewVerifiedRuleGoal, hchest, hrequired, hbutton]
 
 /-!
-【定理：优先链输出始终是合法目标】
+【定理：具体选择器确实满足优先级契约】
+该名称保留通用接口风格，但证明参数已由实际实现构造。
 -/
 theorem priority_selector_goal_admissible
-    {selector : RuleSelector} (h : RulePriorityContract selector)
     (s : SymbolicState) (m : AgentMemory) :
-    GoalAdmissible s m (selector s m) :=
-  h.admissible s m
-
+    GoalAdmissible s m (ruleBasedChooseGoal s m) :=
+  ruleBasedChooseGoal_priorityContract.admissible s m
 /-!
 【紧急战斗反射】
 最终 `agent.py` 会在普通规划前处理中断队列：面向相邻怪物时攻击，有盾时格挡，
@@ -646,6 +992,7 @@ def ActionAllowed (s : SymbolicState) (a : Action) : Prop :=
   a = Action.wait ∨
   a = Action.pressA ∨
   a = Action.pressB ∨
+  a = Action.useExit ∨
   exitPushAllowed s a ∨
   (a ∈ movementActions ∧ isWalkable s (nextPosition s.player a))
 
@@ -662,7 +1009,7 @@ theorem combat_reflex_action_allowed
   | block _hthreat _hshield =>
       exact Or.inr (Or.inr (Or.inl rfl))
   | retreat hmove hwalk =>
-      exact Or.inr (Or.inr (Or.inr (Or.inr ⟨hmove, hwalk⟩)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr ⟨hmove, hwalk⟩))))
 /-!
 【目标到动作的执行器关系】
 `ActionForGoal s g a` 对应 `executor.py` 的 `action_for_goal`：
@@ -699,6 +1046,12 @@ inductive ActionForGoal : SymbolicState → Goal → Action → Prop where
       p ∈ s.buttons →
       PlannerStep s [p] a →
       ActionForGoal s { kind := GoalKind.activateButton, target := some p } a
+  | switchOn
+      {s : SymbolicState} {p : Position} :
+      switchVisibleAt s p →
+      s.player = p →
+      ActionForGoal s { kind := GoalKind.activateSwitch, target := some p }
+        Action.pressA
   | switchAdjacent
       {s : SymbolicState} {p : Position} :
       p ∈ s.switches →
@@ -710,6 +1063,12 @@ inductive ActionForGoal : SymbolicState → Goal → Action → Prop where
       p ∈ s.switches →
       PlannerStep s (approachTiles p) a →
       ActionForGoal s { kind := GoalKind.activateSwitch, target := some p } a
+  | structuredExit
+      {s : SymbolicState} {exit : Exit} :
+      canUseExitObject s exit →
+      ActionForGoal s
+        { kind := GoalKind.goToExit, target := some exit.pos }
+        Action.useExit
   | exitPush
       {s : SymbolicState} {p : Position} :
       p ∈ allExits s →
@@ -732,6 +1091,27 @@ inductive ActionForGoal : SymbolicState → Goal → Action → Prop where
       ActionForGoal s g Action.wait
 
 /-!
+【按钮目标不会输出 A 键】
+按钮由进入目标格自动触发，因此执行器处理按钮目标时只能输出安全移动或等待，
+不会在到达后额外执行 `pressA`。
+-/
+theorem button_action_for_goal_ne_pressA
+    {s : SymbolicState} {position : Position} {action : Action}
+    (execution : ActionForGoal s
+      { kind := GoalKind.activateButton, target := some position } action) :
+    action ≠ Action.pressA := by
+  intro hpress
+  subst action
+  cases execution with
+  | interactAdjacent hkind _hadjacent =>
+      simp [interactionKind] at hkind
+  | interactPlan hkind _plan =>
+      simp [interactionKind] at hkind
+  | buttonPlan _hbutton plan =>
+      have hmove := (planner_step_safe plan).1
+      simp [movementActions] at hmove
+
+/-!
 【定理：executor 输出的移动动作安全或合法出门】
 如果 `ActionForGoal` 输出的是移动动作，那么这个移动要么是合法出门，
 要么走向 `isWalkable` 的安全格。
@@ -752,20 +1132,25 @@ theorem action_for_goal_move_safe_or_exit
       simp [movementActions] at ha
   | buttonPlan _hbutton hplan =>
       exact Or.inr (planner_step_safe hplan).2
+  | switchOn _hvisible _hplayer =>
+      simp [movementActions] at ha
   | switchAdjacent _hswitch _hadj =>
       simp [movementActions] at ha
   | switchPlan _hswitch hplan =>
       exact Or.inr (planner_step_safe hplan).2
+  | structuredExit _husable =>
+      simp [movementActions] at ha
   | exitPush hexit hplayer hdoor hpush =>
       rcases hpush with ⟨hmove, hout⟩
-      exact Or.inl ⟨hmove, by simpa [hplayer] using hexit, by simpa [hplayer] using hdoor, by simpa [hplayer] using hout⟩
+      exact Or.inl ⟨hmove, by simpa [hplayer] using hexit,
+        by simpa [hplayer] using hdoor,
+        by simpa [hplayer] using hout⟩
   | exitPlan _hexit hplan =>
       exact Or.inr (planner_step_safe hplan).2
   | explorePlan hplan =>
       exact Or.inr (planner_step_safe hplan).2
   | noPlan =>
       simp [movementActions] at ha
-
 /-!
 【定理：executor 输出满足 action mask】
 `ActionForGoal` 产生的动作一定满足 `ActionAllowed`：
@@ -782,30 +1167,35 @@ theorem action_for_goal_allowed
       exact Or.inr (Or.inl rfl)
   | interactPlan _hkind hplan =>
       have hs := planner_step_safe hplan
-      exact Or.inr (Or.inr (Or.inr (Or.inr hs)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr hs))))
   | buttonAlreadyOn _hbutton _hplayer =>
       exact Or.inl rfl
   | buttonPlan _hbutton hplan =>
       have hs := planner_step_safe hplan
-      exact Or.inr (Or.inr (Or.inr (Or.inr hs)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr hs))))
+  | switchOn _hvisible _hplayer =>
+      exact Or.inr (Or.inl rfl)
   | switchAdjacent _hswitch _hadj =>
       exact Or.inr (Or.inl rfl)
   | switchPlan _hswitch hplan =>
       have hs := planner_step_safe hplan
-      exact Or.inr (Or.inr (Or.inr (Or.inr hs)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr hs))))
+  | structuredExit _husable =>
+      exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
   | exitPush hexit hplayer hdoor hpush =>
       rcases hpush with ⟨hmove, hout⟩
-      exact Or.inr (Or.inr (Or.inr (Or.inl
-        ⟨hmove, by simpa [hplayer] using hexit, by simpa [hplayer] using hdoor, by simpa [hplayer] using hout⟩)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl
+        ⟨hmove, by simpa [hplayer] using hexit,
+          by simpa [hplayer] using hdoor,
+          by simpa [hplayer] using hout⟩))))
   | exitPlan _hexit hplan =>
       have hs := planner_step_safe hplan
-      exact Or.inr (Or.inr (Or.inr (Or.inr hs)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr hs))))
   | explorePlan hplan =>
       have hs := planner_step_safe hplan
-      exact Or.inr (Or.inr (Or.inr (Or.inr hs)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr hs))))
   | noPlan =>
       exact Or.inl rfl
-
 /-!
 【最终安全过滤关系】
 `Shielded s raw out` 对应 `shield.py`：
@@ -824,6 +1214,9 @@ inductive Shielded : SymbolicState → Action → Action → Prop where
   | passB
       {s : SymbolicState} :
       Shielded s Action.pressB Action.pressB
+  | passUseExit
+      {s : SymbolicState} :
+      Shielded s Action.useExit Action.useExit
   | allowExit
       {s : SymbolicState} {a : Action} :
       exitPushAllowed s a →
@@ -857,13 +1250,14 @@ theorem shielded_move_safe_or_exit
       simp [movementActions] at hout
   | passB =>
       simp [movementActions] at hout
+  | passUseExit =>
+      simp [movementActions] at hout
   | allowExit hexit =>
       exact Or.inl hexit
   | blockUnsafe _hmove _hnotExit _hunsafe =>
       simp [movementActions] at hout
   | allowSafe _hmove hsafe =>
       exact Or.inr hsafe
-
 /-!
 【定理：shield 输出满足 action mask】
 无论原始动作是什么，只要 `Shielded s raw out` 成立，
@@ -880,13 +1274,15 @@ theorem shielded_output_allowed
       exact Or.inr (Or.inl rfl)
   | passB =>
       exact Or.inr (Or.inr (Or.inl rfl))
+  | passUseExit =>
+      exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
   | allowExit hexit =>
-      exact Or.inr (Or.inr (Or.inr (Or.inl hexit)))
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl hexit))))
   | blockUnsafe _hmove _hnotExit _hunsafe =>
       exact Or.inl rfl
   | allowSafe hmove hsafe =>
-      exact Or.inr (Or.inr (Or.inr (Or.inr ⟨hmove, hsafe⟩)))
-
+      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
+        ⟨hmove, hsafe⟩))))
 /-!
 【定理：不安全移动会被 shield 改成等待】
 如果原始动作是移动动作，但既不是合法出门，也不是安全可通行移动，
@@ -906,13 +1302,14 @@ theorem shield_blocks_unsafe_movement
       cases hmove <;> contradiction
   | passB =>
       cases hmove <;> contradiction
+  | passUseExit =>
+      cases hmove <;> contradiction
   | allowExit hexit =>
       exact False.elim (hnotExit hexit)
   | blockUnsafe _ _ _ =>
       rfl
   | allowSafe _ hsafe =>
       exact False.elim (hunsafe hsafe)
-
 /-!
 【定理：规则目标经过 executor 后的原始移动安全或合法出门】
 把 `RuleGoal` 和 `ActionForGoal` 串起来：
@@ -973,4 +1370,248 @@ theorem rule_pipeline_output_allowed
     ActionAllowed s out :=
   shielded_output_allowed hshield
 
+/-!
+【记忆集合插入】
+只在元素尚未出现时插入，保持 Python `set` 字段的幂等语义。
+-/
+def rememberGlobal
+    (position : GlobalPosition) (positions : List GlobalPosition) :
+    List GlobalPosition :=
+  if position ∈ positions then positions else position :: positions
+
+def openedChestsAfter
+    (before after : SymbolicState) (selected : Option Goal)
+    (memory : AgentMemory) : List GlobalPosition :=
+  match selected with
+  | some goal =>
+      match goal.kind, goal.target with
+      | GoalKind.openChest, some position =>
+          if position ∉ after.chests then
+            rememberGlobal (globalize before.room position)
+              memory.openedChests
+          else
+            memory.openedChests
+      | _, _ => memory.openedChests
+  | none => memory.openedChests
+
+def activatedSwitchesAfter
+    (before after : SymbolicState) (selected : Option Goal)
+    (memory : AgentMemory) : List GlobalPosition :=
+  match selected with
+  | some goal =>
+      match goal.kind, goal.target with
+      | GoalKind.activateSwitch, some position =>
+          if before.switchesActivated < after.switchesActivated then
+            rememberGlobal (globalize before.room position)
+              memory.activatedSwitches
+          else
+            memory.activatedSwitches
+      | _, _ => memory.activatedSwitches
+  | none => memory.activatedSwitches
+
+def visitActivatedSwitchesAfter
+    (before after : SymbolicState) (selected : Option Goal)
+    (memory : AgentMemory) : List GlobalPosition :=
+  match selected with
+  | some goal =>
+      match goal.kind, goal.target with
+      | GoalKind.activateSwitch, some position =>
+          if before.switchesActivated < after.switchesActivated then
+            rememberGlobal (globalize before.room position)
+              memory.visitActivatedSwitches
+          else
+            memory.visitActivatedSwitches
+      | _, _ => memory.visitActivatedSwitches
+  | none => memory.visitActivatedSwitches
+
+def activatedButtonsAfter
+    (after : SymbolicState) (memory : AgentMemory) :
+    List GlobalPosition :=
+  if buttonVisibleAt after after.player ∧
+      after.player ∈ after.pressedButtons then
+    rememberGlobal (globalize after.room after.player)
+      memory.activatedButtons
+  else
+    memory.activatedButtons
+
+def usedExitsAfter
+    (before after : SymbolicState) (selected : Option Goal)
+    (memory : AgentMemory) : List GlobalPosition :=
+  if before.room = after.room then
+    memory.usedExits
+  else
+    match selected with
+    | some goal =>
+        match goal.kind, goal.target with
+        | GoalKind.goToExit, some position =>
+            rememberGlobal (globalize before.room position)
+              memory.usedExits
+        | _, _ => memory.usedExits
+    | none => memory.usedExits
+
+/-!
+【AgentMemory 的确定更新】
+房间变化时清除 sticky goal 和本次访问开关集合；自动按钮依据转移后的
+`pressedButtons` 更新，其余对象依据已执行目标和环境差分更新。
+-/
+def updateRuleMemory
+    (before : SymbolicState) (memory : AgentMemory)
+    (selected : Option Goal) (after : SymbolicState) : AgentMemory :=
+  { lastGoal :=
+      if before.room = after.room then
+        match selected with
+        | some goal => some goal
+        | none => memory.lastGoal
+      else
+        none
+    openedChests := openedChestsAfter before after selected memory
+    activatedButtons := activatedButtonsAfter after memory
+    activatedSwitches :=
+      activatedSwitchesAfter before after selected memory
+    visitActivatedSwitches :=
+      if before.room = after.room then
+        visitActivatedSwitchesAfter before after selected memory
+      else
+        []
+    usedExits := usedExitsAfter before after selected memory
+    roomSteps := if before.room = after.room then memory.roomSteps + 1 else 0
+    switchButtonCooldown :=
+      if before.room ≠ after.room then
+        0
+      else if before.switchesActivated < after.switchesActivated then
+        40
+      else
+        memory.switchButtonCooldown - 1 }
+
+/-!
+【规则 Agent 单步】
+`planned` 构造子逐项串联具体 `ruleBasedChooseGoal`、executor、shield、
+共享环境和记忆更新。`reflex` 对应 `agent.py` 在高层规划前执行的紧急战斗分支。
+-/
+inductive RulePolicyStep :
+    SymbolicState → AgentMemory → Action →
+      SymbolicState → AgentMemory → Prop where
+  | planned
+      {before after : SymbolicState} {memory nextMemory : AgentMemory}
+      {goal : Goal} {raw output : Action} :
+      ruleBasedChooseGoal before memory = goal →
+      ActionForGoal before goal raw →
+      Shielded before raw output →
+      FullEnvStep before output after →
+      nextMemory = updateRuleMemory before memory (some goal) after →
+      RulePolicyStep before memory output after nextMemory
+  | reflex
+      {before after : SymbolicState} {memory nextMemory : AgentMemory}
+      {raw output : Action} :
+      CombatReflex before raw →
+      Shielded before raw output →
+      FullEnvStep before output after →
+      nextMemory = updateRuleMemory before memory none after →
+      RulePolicyStep before memory output after nextMemory
+
+/-!
+【规则 Agent 多步执行】
+动作列表中的每一步都必须由同一个 `RulePolicyStep` 关系生成；中间状态和
+中间记忆同时作为归纳索引传给下一步。
+-/
+inductive RulePolicyExec :
+    SymbolicState → AgentMemory → List Action →
+      SymbolicState → AgentMemory → Prop where
+  | nil
+      {state : SymbolicState} {memory : AgentMemory} :
+      RulePolicyExec state memory [] state memory
+  | cons
+      {state next final : SymbolicState}
+      {memory nextMemory finalMemory : AgentMemory}
+      {action : Action} {plan : List Action} :
+      RulePolicyStep state memory action next nextMemory →
+      RulePolicyExec next nextMemory plan final finalMemory →
+      RulePolicyExec state memory (action :: plan) final finalMemory
+
+/-!
+【定理：策略生成执行投影为共享环境执行】
+-/
+theorem rulePolicyExec_to_fullExec
+    {state final : SymbolicState} {memory finalMemory : AgentMemory}
+    {plan : List Action}
+    (execution : RulePolicyExec state memory plan final finalMemory) :
+    FullExec state plan final := by
+  induction execution with
+  | nil => exact FullExec.nil
+  | cons policyStep _tail ih =>
+      apply FullExec.cons
+      · cases policyStep with
+        | planned _selected _executor _shield environment _memory =>
+            exact environment
+        | reflex _reflex _shield environment _memory =>
+            exact environment
+      · exact ih
+
+/-!
+【规则路线强化任务证书】
+除公共安全轨迹和目标外，还携带初末 AgentMemory 以及由具体规则策略生成
+同一动作列表、同一最终状态的证明。
+-/
+structure RuleTaskCertificate
+    (goal : SymbolicState → Prop) (init : SymbolicState) where
+  plan : List Action
+  final : SymbolicState
+  execution : SafeFullExec init plan final
+  completed : goal final
+  initialMemory : AgentMemory
+  finalMemory : AgentMemory
+  generated : RulePolicyExec init initialMemory plan final finalMemory
+
+/-!
+【由具体规则策略完成任务】
+`CompletedByRulePolicy goal init` 不只是断言环境中存在一条通关路线，还要求
+同一动作列表和同一最终状态由 `RulePolicyExec` 生成。该命题把具体目标选择器、
+executor、shield、环境转移和记忆更新与安全通关结论绑定在一起。
+-/
+def CompletedByRulePolicy
+    (goal : SymbolicState → Prop) (init : SymbolicState) : Prop :=
+  ∃ plan final initialMemory finalMemory,
+    SafeFullExec init plan final ∧
+    goal final ∧
+    RulePolicyExec init initialMemory plan final finalMemory
+
+def RuleTaskCertificate.toTaskCertificate
+    {goal : SymbolicState → Prop} {init : SymbolicState}
+    (certificate : RuleTaskCertificate goal init) :
+    TaskCertificate goal init :=
+  { plan := certificate.plan
+    final := certificate.final
+    execution := certificate.execution
+    completed := certificate.completed }
+
+theorem ruleTaskCertificate_completedBy
+    {goal : SymbolicState → Prop} {init : SymbolicState}
+    (certificate : RuleTaskCertificate goal init) :
+    CompletedBy goal init :=
+  taskCertificate_completedBy certificate.toTaskCertificate
+
+/-!
+【强化证书推出规则策略完成性】
+证书中的三个核心字段使用相同的 `plan` 和 `final`，因此不能把手写环境轨迹
+与另一条策略轨迹拼接后冒充策略通关证明。
+-/
+theorem ruleTaskCertificate_completedByRulePolicy
+    {goal : SymbolicState → Prop} {init : SymbolicState}
+    (certificate : RuleTaskCertificate goal init) :
+    CompletedByRulePolicy goal init :=
+  ⟨certificate.plan, certificate.final, certificate.initialMemory,
+    certificate.finalMemory, certificate.execution, certificate.completed,
+    certificate.generated⟩
+
+/-!
+【规则策略完成性可投影为环境完成性】
+-/
+theorem completedByRulePolicy_to_completedBy
+    {goal : SymbolicState → Prop} {init : SymbolicState}
+    (completed : CompletedByRulePolicy goal init) :
+    CompletedBy goal init := by
+  rcases completed with
+    ⟨plan, final, _initialMemory, _finalMemory,
+      execution, goalReached, _generated⟩
+  exact ⟨plan, final, safeFullExec_to_fullExec execution, goalReached⟩
 end RuleBasedSubmission.Formalization

@@ -412,8 +412,6 @@ def task5BlockingMonsterContext : Task5MaskContext :=
 def task5WestChestContext : Task5MaskContext :=
   { rawMask := task5RawMask [Task5Action.openChest] }
 
-def task5ButtonContext : Task5MaskContext :=
-  { rawMask := task5RawMask [Task5Action.activateMechanism] }
 
 def task5SouthExitContext : Task5MaskContext :=
   { rawMask := task5RawMask [Task5Action.exitSouth]
@@ -452,16 +450,10 @@ theorem task5_rl_west_chest_checkpoint :
       Task5Action.openChest := by
   native_decide
 
-theorem task5_rl_button_checkpoint :
-    Task5Checkpoint task5BackAtButton task5ButtonContext
-      Task5Action.activateMechanism := by
-  native_decide
-
-theorem task5_rl_button_option_accepts_button_goal :
-    Task5CompatibleGoal Task5Action.activateMechanism
-      Strategy.GoalKind.pressButton := by
-  simp [Task5CompatibleGoal]
-
+theorem task5_rl_button_triggered_by_entry :
+    (4, 4) ∈ task5BackAtButton.pressedButtons ∧
+      task5BackAtButton.buttonsPressed = 1 :=
+  task5_button_triggered_on_entry
 theorem task5_rl_conditional_south_exit_checkpoint :
     Task5Checkpoint task5AfterButton task5SouthExitContext
       Task5Action.exitSouth := by

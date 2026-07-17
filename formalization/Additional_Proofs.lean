@@ -72,7 +72,8 @@ theorem envStep_progressLe
     {before after : SymbolicState} {action : Action}
     (step : EnvStep before action after) :
     ProgressLe before after := by
-  cases step <;> simp [ProgressLe]
+  cases step <;> simp [ProgressLe, enterPositionState] <;>
+    split <;> simp_all
 
 theorem applyLoot_progressLe (loot : Loot) (state : SymbolicState) :
     ProgressLe state (applyLoot loot state) := by
@@ -114,8 +115,6 @@ theorem fullEnvStep_progressLe
       exact openChestObjectState_progressLe _ _
   | attackMonsterObject _hready =>
       exact attackMonsterObjectState_progressLe _ _
-  | pressButton =>
-      simp [ProgressLe]
   | pressSwitch =>
       simp [ProgressLe]
   | talkNpc =>
@@ -125,7 +124,8 @@ theorem fullEnvStep_progressLe
   | pressShieldNoItem =>
       simp [ProgressLe]
   | useExitObject _hready =>
-      simp [ProgressLe, useExitObjectState]
+      simp [ProgressLe, useExitObjectState, enterPositionState]
+      split <;> simp_all
   | monsterDamage _hthreat _hshield =>
       exact takeDamage_progressLe _ _
   | monsterDamageBlocked _hthreat _hshield =>
@@ -208,8 +208,6 @@ theorem fullEnvStep_worldCompletedMonotone
       exact openChestObjectState_worldCompletedMonotone _ _
   | attackMonsterObject _hready =>
       exact attackMonsterObjectState_worldCompletedMonotone _ _
-  | pressButton =>
-      simp [WorldCompletedMonotone]
   | pressSwitch =>
       simp [WorldCompletedMonotone]
   | talkNpc =>
@@ -805,31 +803,31 @@ def CertificatesShareTrace
   first.plan = second.plan ∧ first.final = second.final
 
 theorem task1_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask1Certificate rlTask1Certificate := by
+    CertificatesShareTrace ruleTask1Certificate.toTaskCertificate rlTask1Certificate := by
   constructor <;> rfl
 
 theorem task2_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask2Certificate rlTask2Certificate := by
+    CertificatesShareTrace ruleTask2Certificate.toTaskCertificate rlTask2Certificate := by
   constructor <;> rfl
 
 theorem task3_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask3Certificate rlTask3Certificate := by
+    CertificatesShareTrace ruleTask3Certificate.toTaskCertificate rlTask3Certificate := by
   constructor <;> rfl
 
 theorem task4_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask4Certificate rlTask4Certificate := by
+    CertificatesShareTrace ruleTask4Certificate.toTaskCertificate rlTask4Certificate := by
   constructor <;> rfl
 
 theorem task5_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask5Certificate rlTask5Certificate := by
+    CertificatesShareTrace ruleTask5Certificate.toTaskCertificate rlTask5Certificate := by
   constructor <;> rfl
 
 theorem all_route_certificates_share_trace :
-    CertificatesShareTrace ruleTask1Certificate rlTask1Certificate ∧
-    CertificatesShareTrace ruleTask2Certificate rlTask2Certificate ∧
-    CertificatesShareTrace ruleTask3Certificate rlTask3Certificate ∧
-    CertificatesShareTrace ruleTask4Certificate rlTask4Certificate ∧
-    CertificatesShareTrace ruleTask5Certificate rlTask5Certificate :=
+    CertificatesShareTrace ruleTask1Certificate.toTaskCertificate rlTask1Certificate ∧
+    CertificatesShareTrace ruleTask2Certificate.toTaskCertificate rlTask2Certificate ∧
+    CertificatesShareTrace ruleTask3Certificate.toTaskCertificate rlTask3Certificate ∧
+    CertificatesShareTrace ruleTask4Certificate.toTaskCertificate rlTask4Certificate ∧
+    CertificatesShareTrace ruleTask5Certificate.toTaskCertificate rlTask5Certificate :=
   ⟨task1_route_certificates_share_trace,
     task2_route_certificates_share_trace,
     task3_route_certificates_share_trace,
@@ -1016,19 +1014,29 @@ theorem positionReachable_has_safeMovePlan
 
 theorem safeMovePlan_exec
     {state : SymbolicState} {plan : List Action} {target : Position}
-    (hsafe : SafeMovePlan state plan target) :
+    (hsafe : SafeMovePlan state plan target)
+    (hbuttons : state.buttons = []) :
     Exec state plan { state with player := target } := by
   induction hsafe with
   | nil =>
       simpa using (Exec.nil : Exec state [] state)
   | @snoc plan current action hplan hmove hwalkable ih =>
+      have hstep :
+          EnvStep { state with player := current } action
+            (enterPositionState { state with player := current }
+              (nextPosition current action)) :=
+        EnvStep.moveSafe hmove hwalkable
+      have henter :
+          enterPositionState { state with player := current }
+              (nextPosition current action) =
+            { state with player := nextPosition current action } := by
+        simp [enterPositionState, hbuttons]
+      rw [henter] at hstep
       have oneStep :
           Exec { state with player := current } [action]
-            { state with player := nextPosition current action } := by
-        apply Exec.cons
-        · simpa using (EnvStep.moveSafe hmove hwalkable)
-        · exact Exec.nil
-      simpa using exec_append ih oneStep
+            { state with player := nextPosition current action } :=
+        Exec.cons hstep Exec.nil
+      exact exec_append ih oneStep
 
 structure VerifiedSearchResult
     (state : SymbolicState) (goals : List Position) where
@@ -1039,10 +1047,11 @@ structure VerifiedSearchResult
 
 theorem verifiedSearchResult_sound
     {state : SymbolicState} {goals : List Position}
-    (result : VerifiedSearchResult state goals) :
+    (result : VerifiedSearchResult state goals)
+    (hbuttons : state.buttons = []) :
     Exec state result.plan { state with player := result.target } ∧
       result.target ∈ goals := by
-  exact ⟨safeMovePlan_exec result.safe, result.target_mem⟩
+  exact ⟨safeMovePlan_exec result.safe hbuttons, result.target_mem⟩
 
 theorem breadth_found_has_verified_plan
     {state : SymbolicState} {depth : Nat} {goals : List Position}

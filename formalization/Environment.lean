@@ -11,7 +11,7 @@
 2. 环境动作、任务目标类型和高层目标；
 3. 符号状态 `SymbolicState`；
 4. 可通行性、安全位置、出口换房等环境谓词；
-5. 移动、撞墙、踩陷阱、开箱、攻击、按钮/开关触发等状态转移；
+5. 移动、撞墙、踩陷阱、开箱、攻击、站上按钮和按 A 开关等状态转移；
 6. 多步执行轨迹；
 7. 基本安全性、不变量和抽象 BFS 完备性引理。
 
@@ -237,6 +237,7 @@ structure Exit where
   targetSpawn : Position
   kind : ExitKind
   sourceRoom : RoomCoord := (0, 0)
+  revealedButtons : List Position := []
   completesTask : Bool := false
   deriving DecidableEq, Repr
 
@@ -278,7 +279,8 @@ structure Goal where
 * `keys`：钥匙数量；
 * `health`：血量；`none` 表示当前证明不依赖精确血量；
 * `hasSword / hasShield`：装备状态；
-* `activated`：已经触发的按钮/开关位置。
+* `activated`：已经按 A 触发的开关位置；
+* `pressedButtons`：已经通过站上 tile 自动触发的按钮位置。
 -/
 structure SymbolicState where
   player : Position
@@ -294,6 +296,8 @@ structure SymbolicState where
   traps : List Position := []
   buttons : List Position := []
   switches : List Position := []
+  buttonLocations : List GlobalPosition := []
+  switchLocations : List GlobalPosition := []
   bridges : List Position := []
   bridgeNS : List Position := []
   bridgeEW : List Position := []
@@ -415,6 +419,33 @@ def allExits (s : SymbolicState) : List Position :=
 -/
 def globalize (room : RoomCoord) (pos : Position) : GlobalPosition :=
   { room := room, pos := pos }
+
+/-!
+【当前房间按钮可见性】
+多房间参考状态可以在 `buttonLocations` 中保存按钮所属房间；空列表表示
+普通感知状态的 `buttons` 已经只包含当前房间对象。
+-/
+@[simp] def buttonVisibleAt (s : SymbolicState) (p : Position) : Prop :=
+  p ∈ s.buttons ∧
+    (s.buttonLocations = [] ∨ globalize s.room p ∈ s.buttonLocations)
+
+/-!
+【当前房间开关可见性】
+语义与 `buttonVisibleAt` 相同，用于排除其他房间中坐标相同的开关。
+-/
+@[simp] def switchVisibleAt (s : SymbolicState) (p : Position) : Prop :=
+  p ∈ s.switches ∧
+    (s.switchLocations = [] ∨ globalize s.room p ∈ s.switchLocations)
+
+instance buttonVisibleAt_decidable (s : SymbolicState) (p : Position) :
+    Decidable (buttonVisibleAt s p) := by
+  unfold buttonVisibleAt
+  infer_instance
+
+instance switchVisibleAt_decidable (s : SymbolicState) (p : Position) :
+    Decidable (switchVisibleAt s p) := by
+  unfold switchVisibleAt
+  infer_instance
 
 /-!
 【移动动作集合】
@@ -920,16 +951,42 @@ def keysAfterExit (s : SymbolicState) (e : Exit) : Nat :=
   | _ => s.keys
 
 /-!
+【进入位置后的自动机关语义】
+`enterPositionState s p` 统一处理玩家进入 tile `p` 的状态更新。
+按钮采用项目与 Python 执行器一致的“站上触发”语义：首次进入未触发按钮时，
+立即记录按钮并增加计数；普通位置或已触发按钮只更新玩家位置。
+-/
+@[simp] def enterPositionState (s : SymbolicState) (p : Position) : SymbolicState :=
+  { s with
+    player := p
+    pressedButtons :=
+      if buttonVisibleAt s p ∧ p ∉ s.pressedButtons then
+        p :: s.pressedButtons
+      else
+        s.pressedButtons
+    buttonsPressed :=
+      if buttonVisibleAt s p ∧ p ∉ s.pressedButtons then
+        s.buttonsPressed + 1
+      else
+        s.buttonsPressed }
+
+/-!
 【使用结构化出口后的状态】
-`useExitObjectState s e` 更新房间、出生位置和钥匙数量。
+`useExitObjectState s e` 更新房间、出生位置和钥匙数量；
+如果出生点是未触发按钮，则在到达时自动触发。
 -/
 def useExitObjectState (s : SymbolicState) (e : Exit) : SymbolicState :=
-  { s with
-    room := e.targetRoom,
-    player := e.targetSpawn,
-    keys := keysAfterExit s e,
-    roomsChanged := s.roomsChanged + 1,
-    worldCompleted := s.worldCompleted || e.completesTask }
+  enterPositionState
+    { s with
+      room := e.targetRoom,
+      player := e.targetSpawn,
+      buttons := e.revealedButtons ++ s.buttons,
+      buttonLocations :=
+        e.revealedButtons.map (globalize e.targetRoom) ++ s.buttonLocations,
+      keys := keysAfterExit s e,
+      roomsChanged := s.roomsChanged + 1,
+      worldCompleted := s.worldCompleted || e.completesTask }
+    e.targetSpawn
 
 /-!
 【终止状态】
@@ -949,7 +1006,7 @@ def TerminalState (s : SymbolicState) (goal : SymbolicState → Prop) : Prop :=
 * 出口换房；
 * 开箱；
 * 攻击怪物；
-* 激活按钮/开关；
+* 站上按钮时随移动自动触发，以及按 A 激活开关；
 * 按 B 键和等待。
 -/
 inductive EnvStep : SymbolicState → Action → SymbolicState → Prop where
@@ -957,14 +1014,15 @@ inductive EnvStep : SymbolicState → Action → SymbolicState → Prop where
       {s : SymbolicState} {a : Action} :
       a ∈ movementActions →
       isWalkable s (nextPosition s.player a) →
-      EnvStep s a { s with player := nextPosition s.player a }
+      EnvStep s a (enterPositionState s (nextPosition s.player a))
   | moveTrap
       {s : SymbolicState} {a : Action} :
       a ∈ movementActions →
       terrainPassable s (nextPosition s.player a) →
       nextPosition s.player a ∈ s.traps →
       EnvStep s a
-        { s with player := nextPosition s.player a, health := damageHealth s }
+        { enterPositionState s (nextPosition s.player a) with
+          health := damageHealth s }
   | moveBlocked
       {s : SymbolicState} {a : Action} :
       a ∈ movementActions →
@@ -990,7 +1048,7 @@ inductive EnvStep : SymbolicState → Action → SymbolicState → Prop where
       EnvStep s Action.pressA { s with monsters := s.monsters.erase m }
   | activateSwitch
       {s : SymbolicState} {p : Position} :
-      (p ∈ s.switches ∨ p ∈ s.buttons) →
+      p ∈ s.switches →
       adjacent s.player p →
       EnvStep s Action.pressA { s with activated := p :: s.activated }
   | pressB
@@ -1022,13 +1080,7 @@ inductive FullEnvStep : SymbolicState → Action → SymbolicState → Prop wher
       {s : SymbolicState} {m : Monster} :
       canAttackObject s m →
       FullEnvStep s Action.pressA (attackMonsterObjectState s m)
-  | pressButton
-      {s : SymbolicState} :
-      s.player ∈ s.buttons →
-      FullEnvStep s Action.pressA
-        { s with
-          pressedButtons := s.player :: s.pressedButtons,
-          buttonsPressed := s.buttonsPressed + 1 }
+
   | pressSwitch
       {s : SymbolicState} :
       s.player ∈ s.switches →
@@ -1253,7 +1305,7 @@ theorem move_safe_player_eq
     t.player = nextPosition s.player a := by
   cases h with
   | moveSafe _ hsafe' =>
-      rfl
+      simp
   | moveTrap _ _ htrap =>
       exact False.elim (hsafe.2 htrap)
   | moveBlocked _ hblocked _ =>
@@ -1346,12 +1398,12 @@ theorem attack_monster_removes_target
   rw [hexact]
 
 /-!
-【定理：激活机关会记录目标位置】
-当玩家激活按钮或开关时，目标位置会被加入 `activated` 列表。
+【定理：激活开关会记录目标位置】
+当玩家按 A 激活开关时，目标位置会被加入 `activated` 列表。
 -/
 theorem activate_switch_records
     {s t : SymbolicState} {p : Position}
-    (_hmech : p ∈ s.switches ∨ p ∈ s.buttons)
+    (_hswitch : p ∈ s.switches)
     (_hadj : adjacent s.player p)
     (_hstep : EnvStep s Action.pressA t)
     (hexact : t = { s with activated := p :: s.activated }) :
@@ -1646,19 +1698,46 @@ theorem shieldBlockState_preserves_player (s : SymbolicState) :
   rfl
 
 /-!
-【定理：按按钮记录玩家当前位置】
-按钮触发会把玩家当前 tile 加入 `pressedButtons`。
+【定理：首次进入按钮会自动记录按钮】
+无需额外执行 `pressA`；进入未触发按钮 tile 的同一步就会更新按钮集合。
 -/
-theorem pressButton_records_player (s : SymbolicState) :
-    s.player ∈ ({ s with pressedButtons := s.player :: s.pressedButtons }.pressedButtons) := by
+theorem enterPositionState_records_fresh_button
+    {s : SymbolicState} {p : Position}
+    (hbutton : buttonVisibleAt s p) (hfresh : p ∉ s.pressedButtons) :
+    p ∈ (enterPositionState s p).pressedButtons := by
+  change p ∈
+    (if buttonVisibleAt s p ∧ p ∉ s.pressedButtons then
+      p :: s.pressedButtons else s.pressedButtons)
+  rw [if_pos ⟨hbutton, hfresh⟩]
   simp
 
 /-!
-【定理：按按钮不会移动玩家】
-按钮触发只改变按钮记忆，不改变玩家位置。
+【定理：首次进入按钮会把计数增加一】
 -/
-theorem pressButton_preserves_player (s : SymbolicState) :
-    ({ s with pressedButtons := s.player :: s.pressedButtons }.player) = s.player := by
+theorem enterPositionState_counts_fresh_button
+    {s : SymbolicState} {p : Position}
+    (hbutton : buttonVisibleAt s p) (hfresh : p ∉ s.pressedButtons) :
+    (enterPositionState s p).buttonsPressed = s.buttonsPressed + 1 := by
+  change (if buttonVisibleAt s p ∧ p ∉ s.pressedButtons then
+    s.buttonsPressed + 1 else s.buttonsPressed) = s.buttonsPressed + 1
+  rw [if_pos ⟨hbutton, hfresh⟩]
+
+/-!
+【定理：重复进入已触发按钮不会重复计数】
+-/
+theorem enterPositionState_does_not_recount_button
+    {s : SymbolicState} {p : Position}
+    (hpressed : p ∈ s.pressedButtons) :
+    (enterPositionState s p).buttonsPressed = s.buttonsPressed := by
+  change (if buttonVisibleAt s p ∧ p ∉ s.pressedButtons then
+    s.buttonsPressed + 1 else s.buttonsPressed) = s.buttonsPressed
+  rw [if_neg (fun h => h.2 hpressed)]
+
+/-!
+【定理：进入位置后玩家位于该位置】
+-/
+theorem enterPositionState_player (s : SymbolicState) (p : Position) :
+    (enterPositionState s p).player = p := by
   rfl
 
 /-!
@@ -1703,7 +1782,7 @@ theorem canUseExitObject_at_player
 -/
 theorem useExitObject_room_eq (s : SymbolicState) (e : Exit) :
     (useExitObjectState s e).room = e.targetRoom := by
-  rfl
+  simp [useExitObjectState]
 
 /-!
 【定理：使用出口后玩家位置等于目标出生点】
@@ -1711,7 +1790,7 @@ theorem useExitObject_room_eq (s : SymbolicState) (e : Exit) :
 -/
 theorem useExitObject_player_eq (s : SymbolicState) (e : Exit) :
     (useExitObjectState s e).player = e.targetSpawn := by
-  rfl
+  simp [useExitObjectState]
 
 /-!
 【定理：锁门出口可用蕴含钥匙足够】
@@ -2316,6 +2395,8 @@ def task4Init : SymbolicState :=
       task4CenterToSouth.pos, task4SouthToCenter.pos]
     lockedExits := [task4CenterToEast.pos]
     switches := [(9, 4), (4, 4)]
+    switchLocations := [globalize task4WestRoom (9, 4),
+      globalize task4CenterRoom (4, 4)]
     bridgeState := BridgeState.northSouth
     health := some 5
     facing := Direction.west
@@ -2691,7 +2772,7 @@ def task5CenterToWest : Exit :=
 def task5WestToCenter : Exit :=
   { pos := (8, 4), targetRoom := task5CenterRoom,
     targetSpawn := (4, 4), kind := ExitKind.normal,
-    sourceRoom := task5WestRoom }
+    sourceRoom := task5WestRoom, revealedButtons := [(4, 4)] }
 
 def task5CenterToSouth : Exit :=
   { pos := (4, 4), targetRoom := task5SouthRoom,
@@ -2722,7 +2803,7 @@ def task5Init : SymbolicState :=
       task5SouthToCenter.pos]
     lockedExits := [task5CenterToEast.pos]
     conditionalExits := [task5CenterToSouth.pos]
-    buttons := [(4, 4)]
+    buttonLocations := [globalize task5CenterRoom (4, 4)]
     health := some 5
     facing := Direction.west
     chestObjects := [task5StartChest, task5WestChest,
@@ -2746,9 +2827,7 @@ def task5BackAtButton : SymbolicState :=
   useExitObjectState task5AfterWestChest task5WestToCenter
 
 def task5AfterButton : SymbolicState :=
-  { task5BackAtButton with
-    pressedButtons := task5BackAtButton.player :: task5BackAtButton.pressedButtons
-    buttonsPressed := task5BackAtButton.buttonsPressed + 1 }
+  task5BackAtButton
 
 def task5InSouth : SymbolicState :=
   useExitObjectState task5AfterButton task5CenterToSouth
@@ -2767,8 +2846,8 @@ def task5Final : SymbolicState :=
 
 def task5Plan : List Action :=
   [Action.pressA, Action.useExit, Action.pressA, Action.pressA,
-    Action.useExit, Action.pressA, Action.useExit, Action.pressA,
-    Action.useExit, Action.useExit, Action.pressA]
+    Action.useExit, Action.useExit, Action.pressA, Action.useExit,
+    Action.useExit, Action.pressA]
 
 private theorem task5_step_open_start :
     FullEnvStep task5Init Action.pressA task5AfterStartChest :=
@@ -2817,16 +2896,6 @@ private theorem task5_step_back_to_button :
       task5Exits, task5CenterRoom, task5WestRoom, applyLoot,
       removeChestObjectAt, damageMonsterObjectAt, keysAfterExit,
       exitCondition])
-
-private theorem task5_step_press_button :
-    FullEnvStep task5BackAtButton Action.pressA task5AfterButton :=
-  FullEnvStep.pressButton (by
-    simp [task5BackAtButton, useExitObjectState, task5AfterWestChest,
-      openChestObjectState, task5AfterWestMonster,
-      attackMonsterObjectState, task5InWest, task5AfterStartChest,
-      task5Init, task5StartChest, task5WestChest, task5CenterToWest,
-      task5WestToCenter, task5WestMonster, applyLoot,
-      removeChestObjectAt, damageMonsterObjectAt, keysAfterExit])
 
 private theorem task5_step_to_south :
     FullEnvStep task5AfterButton Action.useExit task5InSouth :=
@@ -2902,8 +2971,8 @@ theorem task5_safe_execution :
     SafeFullExec task5Init task5Plan task5Final := by
   change SafeFullExec task5Init
     [Action.pressA, Action.useExit, Action.pressA, Action.pressA,
-      Action.useExit, Action.pressA, Action.useExit, Action.pressA,
-      Action.useExit, Action.useExit, Action.pressA] task5Final
+      Action.useExit, Action.useExit, Action.pressA, Action.useExit,
+      Action.useExit, Action.pressA] task5Final
   refine SafeFullExec.cons (t := task5AfterStartChest) (by
     simp [FailedState, DeadState, TimedOut, task5Init]) task5_step_open_start ?_
   refine SafeFullExec.cons (t := task5InWest) (by
@@ -2930,16 +2999,8 @@ theorem task5_safe_execution :
       task5WestChest, task5CenterToWest, task5WestMonster,
       applyLoot, damageMonsterObjectAt, keysAfterExit])
     task5_step_back_to_button ?_
-  refine SafeFullExec.cons (t := task5AfterButton) (by
-    simp [FailedState, DeadState, TimedOut, task5BackAtButton,
-      useExitObjectState, task5AfterWestChest, openChestObjectState,
-      task5AfterWestMonster, attackMonsterObjectState, task5InWest,
-      task5AfterStartChest, task5Init, task5StartChest,
-      task5WestChest, task5CenterToWest, task5WestToCenter,
-      task5WestMonster, applyLoot, damageMonsterObjectAt,
-      keysAfterExit]) task5_step_press_button ?_
   refine SafeFullExec.cons (t := task5InSouth) (by
-    simp [FailedState, DeadState, TimedOut, task5AfterButton,
+    simp [FailedState, DeadState, TimedOut,
       task5BackAtButton, useExitObjectState, task5AfterWestChest,
       openChestObjectState, task5AfterWestMonster,
       attackMonsterObjectState, task5InWest, task5AfterStartChest,
@@ -3011,15 +3072,24 @@ theorem task5_goal : Task5Goal task5Final := by
     task5WestMonster, applyLoot, healHealth, removeChestObjectAt,
     damageMonsterObjectAt, keysAfterExit]
 
+theorem task5_button_triggered_on_entry :
+    (4, 4) ∈ task5BackAtButton.pressedButtons ∧
+      task5BackAtButton.buttonsPressed = 1 := by
+  simp [task5BackAtButton, useExitObjectState, task5AfterWestChest,
+    openChestObjectState, task5AfterWestMonster,
+    attackMonsterObjectState, task5InWest, task5AfterStartChest,
+    task5Init, task5StartChest, task5WestChest, task5CenterToWest,
+    task5WestToCenter, task5WestMonster, applyLoot,
+    removeChestObjectAt, damageMonsterObjectAt, keysAfterExit]
+
 theorem task5_south_gate_blocked_before_button :
-    ¬ exitCondition task5BackAtButton task5CenterToSouth := by
-  simp [exitCondition, task5CenterToSouth, task5BackAtButton,
-    useExitObjectState, task5AfterWestChest, openChestObjectState,
-    task5AfterWestMonster, attackMonsterObjectState, task5InWest,
+    ¬ exitCondition task5AfterWestChest task5CenterToSouth := by
+  simp [exitCondition, task5CenterToSouth, task5AfterWestChest,
+    openChestObjectState, task5AfterWestMonster,
+    attackMonsterObjectState, task5InWest, useExitObjectState,
     task5AfterStartChest, task5Init, task5StartChest, task5WestChest,
-    task5CenterToWest, task5WestToCenter, task5WestMonster,
-    applyLoot, removeChestObjectAt, damageMonsterObjectAt,
-    keysAfterExit]
+    task5CenterToWest, task5WestMonster, applyLoot,
+    removeChestObjectAt, damageMonsterObjectAt, keysAfterExit]
 
 theorem task5_east_gate_blocked_without_key :
     ¬ exitCondition { task5BackAtEastGate with keys := 0 }
