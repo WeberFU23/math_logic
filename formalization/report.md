@@ -1,784 +1,321 @@
-# Formalization 形式化证明报告
+# 数理逻辑大作业形式化证明报告
 
-## 1. 报告范围
+本项目采用“公共环境语义 + 路线特有策略语义 + 任务证书”的分层形式化思路。
+`Environment.lean` 给出两条路线共同遵守的状态机；Rule-based 和 RL-based 分别证明自己的决策层
+满足环境约束；最后用 `SafeFullExec` 和五个任务目标谓词验证完整符号轨迹。
 
-本报告依据 `formalization/` 中的六个 Lean 文件整理：
+## 1. 环境形式化
 
-| 文件 | 形式化内容 |
-| --- | --- |
-| `Environment.lean` | 两条路线共用的符号环境、对象语义、状态转移、执行轨迹、五关目标与公共参考场景 |
-| `Rule_based_Strategy.lean` | Rule-based 的记忆、目标合法性、优先级、planner、executor、战斗反射和 safety shield |
-| `Rule_based_TaskProofs.lean` | Rule-based 在 Task 1-5 关键状态上的策略检查点与通关证书 |
-| `RL_based_Strategy.lean` | RL 的共享状态投影、特征编码、高层 option、action mask、模型接口和 primitive shield |
-| `RL_based_TaskProofs.lean` | RL 的环境 readiness、mask 检查点以及 Task 1-5 通关证书 |
-| `Additional_Proofs.lean` | 安全轨迹闭包、状态单调性、mask 可靠性、shield 性质、跨路线一致性和可验证搜索 |
+### 1.1 状态定义
 
-依赖关系为：
+房间内坐标定义为 `Position := Int × Int`，房间坐标定义为 `RoomCoord := Int × Int`。
+核心状态 `SymbolicState` 按游戏语义保存以下信息：
+
+| 状态部分 | Lean 字段 | 含义 |
+| --- | --- | --- |
+| 玩家 | `player`, `room`, `facing`, `health`, `steps` | 位置、房间、朝向、生命和时钟 |
+| 地图 | `walls`, `traps`, `gaps`, `bridges`, `bridgeState`, `npcs` | 不可走格、危险格、桥和 NPC |
+| 可交互对象 | `chests`, `monsters`, `buttons`, `switches`, `exitObjects` | 宝箱、怪物、机关和出口 |
+| 资源 | `keys`, `gold`, `items`, `hasSword`, `hasShield`, `shieldUp` | 背包、装备和举盾状态 |
+| 任务里程碑 | `keysCollected`, `chestsOpened`, `monstersKilled`, `buttonsPressed`, `switchesActivated`, `roomsChanged`, `worldCompleted` | 不会因钥匙消耗等操作丢失的累计进度 |
+
+任务目标使用累计里程碑而不是只观察最终背包。例如钥匙通过锁门后可以被消耗，但
+`keysCollected ≥ 1` 仍能证明执行过程中确实取得过钥匙。
+
+### 1.2 动作定义
+
+`Action` 包含七个 Agent 动作和两个扩展环境动作：
 
 ```text
-Environment.lean
-├── Rule_based_Strategy.lean
-│   └── Rule_based_TaskProofs.lean
-└── RL_based_Strategy.lean
-    └── RL_based_TaskProofs.lean
-
-Additional_Proofs.lean
-├── imports Rule_based_TaskProofs.lean
-└── imports RL_based_TaskProofs.lean
+wait, up, down, left, right, pressA, pressB, useExit, envTick
 ```
 
-其中 `Environment.lean` 是唯一的环境语义。RL 文件中的 `Strategy.SymbolicState`
-只是神经网络编码器读取的定长视图，通过 `ofSharedState` 从公共环境状态投影得到。
+`up/down/left/right` 通过 `delta` 和 `nextPosition` 更新位置；`pressA` 表示开箱、攻击或触发机关；
+`pressB` 表示举盾；`useExit` 表示结构化换房；`envTick` 表示怪物移动、伤害、周期掉血和时钟推进。
+`actionOfDirection` 与 `directionOfAction` 连接方向和移动动作。
 
-## 2. 形式化变量与数据结构
+### 1.3 对象定义
 
-### 2.1 常用变量约定
-
-Lean 定理中反复出现的绑定变量含义如下：
-
-| 变量 | 类型 | 含义 |
+| 对象 | 关键字段或构造 | 形式化内容 |
 | --- | --- | --- |
-| `s`、`t`、`u` | `MathLogic.Formalization.SymbolicState` | 环境转移前、中、后的符号状态 |
-| `p`、`q`、`target`、`to` | `Position` | 房间内 tile 坐标 |
-| `room` | `RoomCoord` | 多房间地图中的房间坐标 |
-| `a`、`raw`、`out` | `Action` | 环境动作、shield 前动作和 shield 后动作 |
-| `plan`、`rest` | `List Action` | 完整动作序列或剩余动作序列 |
-| `g`、`goal` | `Goal` 或 `SymbolicState → Prop` | 高层目标或任务目标谓词 |
-| `m` | `AgentMemory` | Rule-based 策略记忆 |
-| `frontier` | `List Position` | BFS 已覆盖的搜索前沿 |
-| `before`、`after` | `SymbolicState` | 单调性定理中的转移前后状态 |
-| `depth` | `Nat` | 安全移动搜索的精确步数 |
-| `goals` | `List Position` | 搜索需要命中的目标位置集合 |
-| `context` | `Task5MaskContext` | Task 5 九动作 mask 的环境和记忆上下文 |
-| `features` | `FeatureVector` | RL 模型输入特征 |
-| `mask`、`rawMask` | `List Bool` | 高层 option 的可用性位向量 |
-| `selected`、`option` | `HighLevelAction` 或 `Task5Action` | RL 选择的高层 option |
-| `policy` | `MaskablePolicy` 或 `Task5MaskablePolicy` | 接收特征和 mask 的抽象策略函数 |
+| `Chest` | `pos`, `loot`, `opened`, `room`, `completesTask` | 宝箱位置、奖励、状态和完成标记 |
+| `Monster` | `pos`, `hp`, `kind`, `damage`, `loot`, `room` | 怪物生命、类型、伤害和掉落 |
+| `Exit` | `pos`, `sourceRoom`, `targetRoom`, `targetSpawn`, `kind` | 出口位置、房间迁移和通过条件 |
+| `ExitKind` | `normal`, `lockedKey`, `allMonstersAndKey`, `buttonGate`, `itemGate` | 普通门、钥匙门、清怪门、按钮门和物品门 |
+| `Loot` | `none`, `key`, `gold`, `heal`, `item` | 开箱或击杀后的资源变化 |
+| `BridgeState` | `northSouth`, `eastWest`, `openAll`, `closed` | Task 4 旋转桥状态 |
 
-### 2.2 公共基础类型与常量
+`canOpenChestObject`、`canAttackObject` 和 `canUseExitObject` 分别给出对象交互的前置条件。
+例如攻击要求怪物存活、位于玩家面前且玩家持剑；出口要求玩家站在门上并满足 `exitCondition`。
 
-| Lean 名称 | 构造或取值 | 形式化含义 |
+### 1.4 目标谓词定义
+
+高层目标由 `GoalKind` 和可选位置组成，覆盖开箱、攻击、按钮、开关、出口、探索和等待。
+关卡完成条件直接定义为状态谓词：
+
+| 目标谓词 | 必要条件 |
+| --- | --- |
+| `Task1Goal` | 世界完成、取得至少一把钥匙、打开至少一个宝箱 |
+| `Task2Goal` | 世界完成、击杀怪物、取得钥匙、打开宝箱 |
+| `Task3Goal` | 世界完成、至少五次换房、击杀怪物、取得钥匙、打开宝箱 |
+| `Task4Goal` | 世界完成、至少两次开关、取得钥匙和剑、击杀怪物、打开至少三个宝箱 |
+| `Task5Goal` | 世界完成、打开至少四个宝箱、至少五次换房、按下按钮、取得钥匙 |
+
+`DeadState` 和 `TimedOut` 分别刻画死亡与超时，`FailedState` 是二者的析取。
+`CompletedBy goal init` 表示存在一条环境轨迹从初态到达满足 `goal` 的状态；
+`TaskCertificate` 进一步保存动作计划、最终状态、`SafeFullExec` 证明和目标证明。
+
+### 1.5 动作转移语义
+
+环境不是用一个可能遗漏前提条件的赋值函数描述，而是用归纳关系 `EnvStep s a t` 和
+`FullEnvStep s a t` 描述“状态 `s` 执行动作 `a` 可以转移到状态 `t`”。
+
+轻量语义 `EnvStep` 覆盖：
+
+- `moveSafe`：目标格满足 `isWalkable` 时移动；
+- `moveTrap`：地形可通过但目标是陷阱时移动并扣血；
+- `moveBlocked`：墙、沟壑、对象等阻挡时保持原位；
+- `exitRoom`：站在边界出口并向外推动时换房；
+- `openChest`：相邻宝箱在按 A 后被移除并增加钥匙；
+- `attackMonster`：相邻、持剑且血量安全时攻击怪物；
+- `activateSwitch`：相邻按钮或开关在按 A 后被记录；
+- `pressB` 与 `wait`：举盾接口或等待。
+
+完整语义 `FullEnvStep` 在此基础上增加结构化开箱与掉落、怪物 HP、按钮计数、旋转桥、NPC、
+盾牌抵伤、怪物移动和伤害、结构化出口、Task 5 周期掉血以及时钟推进。
+`exitCondition` 分别检查钥匙数量、清怪状态、按钮记录或背包物品，
+`useExitObjectState` 才能更新房间、出生点、钥匙和 `worldCompleted`。
+
+`Exec` 和 `FullExec` 将一步关系递归扩展到动作列表。`SafeFullExec` 还要求轨迹中的每个状态都满足
+`¬ FailedState`，因此死亡或超时状态不能被当作通关证书。
+
+### 1.6 关键机制与环境定理
+
+| 机制 | 主要函数 | 已证明性质 |
 | --- | --- | --- |
-| `Position` | `Int × Int` | 单房间内坐标 `(x, y)` |
-| `RoomCoord` | `Int × Int` | 多房间地图坐标，允许负坐标 |
-| `boardWidth` | `10` | 单房间宽度 |
-| `boardHeight` | `8` | 单房间高度 |
-| `task5DrainInterval` | `200` | Task 5 周期掉血间隔 |
-| `GlobalPosition` | `room`, `pos` | 房间坐标与房间内坐标的组合 |
-| `ObjectKind` | `wall`, `chest`, `monster`, `trap`, `button`, `switch`, `bridge`, `gap`, `exit`, `npc` | 环境对象类别 |
-| `Direction` | `north`, `south`, `west`, `east` | 玩家朝向和移动方向 |
-| `Action` | `wait`, `up`, `down`, `left`, `right`, `pressA`, `pressB`, `useExit`, `envTick` | 玩家动作及扩展环境动作 |
-| `Item` | `sword`, `shield`, `boots`, `bridgeTool` | 装备和道具 |
-| `Loot` | `none`, `key n`, `gold n`, `heal n`, `item i` | 宝箱或怪物奖励 |
-| `MonsterKind` | `chaser`, `patroller`, `ambusher`, `guardian` | 怪物类别 |
-| `BridgeState` | `northSouth`, `eastWest`, `openAll`, `closed` | 旋转桥状态 |
-| `ExitKind` | `normal`, `lockedKey`, `allMonstersAndKey`, `buttonGate`, `itemGate` | 普通门、钥匙门、清怪钥匙门、按钮门和物品门 |
-| `GoalKind` | `openChest`, `attackMonster`, `activateButton`, `activateSwitch`, `goToExit`, `explore`, `wait` | 公共高层环境目标类别 |
+| 合法移动 | `terrainPassable`, `isWalkable`, `SafePosition` | `walkable_is_safe_position`：可走格不越界、不进墙、陷阱或未连接沟壑 |
+| 撞墙 | `EnvStep.moveBlocked` | `move_blocked_player_eq`：被阻挡后位置不变 |
+| 陷阱和伤害 | `takeDamage`, `task5TimedDrainState` | 伤害只改变生命值，不破坏累计任务里程碑 |
+| 开箱和攻击 | `applyLoot`, `openChestObjectState`, `attackMonsterObjectState` | 奖励、击杀和累计计数更新正确 |
+| 按钮和桥 | `pressedButtons`, `toggleBridgeState` | 按钮记录、桥切换以及两次切换恢复原状态 |
+| 条件门 | `exitCondition`, `canUseExitObject` | 可用按钮门、清怪钥匙门和物品门必然满足相应前置条件 |
+| 安全轨迹 | `SafeFullExec` | `safeFullExec_append` 可拼接轨迹，`safeFullExec_final_not_failed` 保证终点非失败 |
+| 进度不变量 | `ProgressLe`, `WorldCompletedMonotone` | `fullExec_progressLe` 和 `fullExec_worldCompletedMonotone` 证明累计进度与完成标志不会倒退 |
 
-### 2.3 结构化环境对象
+公共参考场景分别构造 `task1Plan` 至 `task5Plan`。定理 `task1_safe_execution` 至
+`task5_safe_execution` 证明五条轨迹逐状态安全，`task1_goal` 至 `task5_goal` 证明其终点满足
+对应任务目标。
 
-| 结构 | 字段 | 含义 |
-| --- | --- | --- |
-| `Chest` | `pos`, `loot`, `opened`, `room`, `completesTask` | 宝箱位置、奖励、打开状态、所属房间和是否触发任务完成 |
-| `Monster` | `pos`, `hp`, `kind`, `damage`, `loot`, `room` | 怪物位置、血量、类别、接触伤害、掉落和所属房间 |
-| `Exit` | `pos`, `targetRoom`, `targetSpawn`, `kind`, `sourceRoom`, `completesTask` | 出口位置、目标房间、出生点、门条件、来源房间和完成标记 |
-| `Goal` | `kind`, `target` | 高层目标类别和可选目标坐标 |
+## 2. Rule-based 策略形式化与证明
 
-### 2.4 公共 `SymbolicState`
+### 2.1 形式化思路与策略设计
 
-`MathLogic.Formalization.SymbolicState` 是所有环境转移和两条路线任务证明共同使用的状态。
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `player` | `Position` | 玩家 tile 坐标 |
-| `playerCenterPx` | `Option Position` | 可选的玩家像素中心 |
-| `room` | `RoomCoord` | 当前房间坐标 |
-| `walls` | `List Position` | 墙格 |
-| `chests` | `List Position` | 轻量宝箱位置 |
-| `monsters` | `List Position` | 轻量怪物位置 |
-| `exits` | `List Position` | 兼容旧接口的出口位置 |
-| `normalExits` | `List Position` | 普通出口 |
-| `lockedExits` | `List Position` | 钥匙门出口 |
-| `conditionalExits` | `List Position` | 条件门出口 |
-| `traps` | `List Position` | 陷阱位置 |
-| `buttons` | `List Position` | 按钮位置 |
-| `switches` | `List Position` | 开关位置 |
-| `bridges` | `List Position` | 当前直接可用桥格 |
-| `bridgeNS`、`bridgeEW` | `List Position` | 南北向、东西向桥格 |
-| `bridgeState` | `BridgeState` | 当前桥状态 |
-| `gaps` | `List Position` | 沟壑位置 |
-| `npcs` | `List Position` | NPC 位置 |
-| `keys`、`gold` | `Nat` | 当前钥匙和金币数量 |
-| `health` | `Option Nat` | 可选精确血量；`none` 表示当前证明不依赖精确值 |
-| `maxHealth` | `Nat` | 最大血量 |
-| `steps`、`maxSteps` | `Nat` | 当前步数和最大步数 |
-| `facing` | `Direction` | 玩家朝向 |
-| `items` | `List Item` | 背包物品 |
-| `hasSword`、`hasShield` | `Bool` | 剑和盾的快速状态字段 |
-| `shieldUp` | `Bool` | 当前是否举盾 |
-| `activated` | `List Position` | 轻量语义中已激活机关 |
-| `pressedButtons` | `List Position` | 已按下按钮 |
-| `chestObjects` | `List Chest` | 结构化宝箱对象 |
-| `monsterObjects` | `List Monster` | 结构化怪物对象 |
-| `exitObjects` | `List Exit` | 结构化出口对象 |
-| `keysCollected` | `Nat` | 累计获得钥匙数 |
-| `chestsOpened` | `Nat` | 累计打开宝箱数 |
-| `monstersKilled` | `Nat` | 累计击杀怪物数 |
-| `buttonsPressed` | `Nat` | 累计按下按钮数 |
-| `switchesActivated` | `Nat` | 累计激活开关数 |
-| `roomsChanged` | `Nat` | 累计换房次数 |
-| `worldCompleted` | `Bool` | 环境任务完成标记 |
-
-累计字段用于定义任务里程碑，避免钥匙被门消耗后无法从最终背包状态判断曾经获得过钥匙。
-
-### 2.5 感知边界变量
-
-| 名称 | 字段或函数类型 | 含义 |
-| --- | --- | --- |
-| `ColorMode` | 六种颜色模式 | `default`、`grayscale`、`dark`、`bright`、`highContrast`、`inverted` |
-| `PixelFrame` | `width`, `height`, `channels`, `pixels` | 输入 RGB 帧 |
-| `ValidPixelFrame` | `PixelFrame → Prop` | 要求帧为 `160 × 128 × 3` 且像素值不超过 255 |
-| `ColorNormalizer` | `ColorMode → PixelFrame → PixelFrame` | 颜色归一化器接口 |
-| `SymbolExtractor` | `PixelFrame → SymbolicState` | 视觉到符号状态提取器接口 |
-| `PerceptionSound` | 归一化器、提取器、真值关系 → `Prop` | 感知输出满足外部真值关系的契约 |
-| `ColorModeInvariant` | 归一化器、提取器 → `Prop` | 不同颜色模式产生相同符号状态的契约 |
-
-### 2.6 轨迹与任务证书变量
-
-| 名称 | 参数或字段 | 含义 |
-| --- | --- | --- |
-| `EnvStep s a t` | 起点、动作、终点 | 轻量一步环境语义 |
-| `FullEnvStep s a t` | 起点、动作、终点 | 包含结构化对象、怪物 tick、盾牌和时间的完整一步语义 |
-| `Exec s plan t` | 起点、动作序列、终点 | 基于 `EnvStep` 的多步轨迹 |
-| `FullExec s plan t` | 起点、动作序列、终点 | 基于 `FullEnvStep` 的多步轨迹 |
-| `SafeFullExec s plan t` | 起点、动作序列、终点 | 每个状态都满足 `¬ FailedState` 的完整轨迹 |
-| `TaskCertificate goal init` | `plan`, `final`, `execution`, `completed` | 安全动作计划、终态、安全轨迹证明和目标证明 |
-
-### 2.7 Rule-based 策略变量
-
-`AgentMemory` 保存影响规则决策的状态：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `lastGoal` | `Option Goal` | 可继续执行的上一目标 |
-| `openedChests` | `List GlobalPosition` | 已打开宝箱记忆 |
-| `activatedButtons` | `List GlobalPosition` | 已触发按钮记忆 |
-| `activatedSwitches` | `List GlobalPosition` | 全局开关触发记忆 |
-| `visitActivatedSwitches` | `List GlobalPosition` | 本次访问中已触发开关 |
-| `usedExits` | `List GlobalPosition` | 已使用出口 |
-| `roomSteps` | `Nat` | 当前房间停留步数 |
-| `switchButtonCooldown` | `Nat` | 机关冷却计数 |
-
-`RuleGoal s m g` 的构造子对应规则目标来源：
+Rule-based 路线被拆成可单独验证的三段管线：
 
 ```text
-sticky
-adjacentChest
-reachableChest
-adjacentMonster
-requiredMonster
-buttonForConditionalDoor
-conditionalMonster
-unusedConditionalExit
-unusedLockedExit
-unusedLegacyExit
-unusedNormalExit
-switchMechanism
-usedLegacyExitFallback
-usedNormalExitFallback
-usedConditionalExitFallback
-usedLockedExitFallback
-explore
-wait
+SymbolicState + AgentMemory
+  -> RuleGoal
+  -> ActionForGoal / PlannerStep
+  -> Shielded
+  -> Action
 ```
 
-策略管线的主要关系变量为：
+`AgentMemory` 记录已访问房间、已开宝箱、已击杀怪物、已触发机关和已用出口。
+`RuleGoal` 根据当前状态和记忆产生符号目标，避免把 Python 控制流程整体当作一个不可分析函数。
 
-| 名称 | 含义 |
-| --- | --- |
-| `RuleSelector := SymbolicState → AgentMemory → Goal` | 抽象目标选择器 |
-| `RulePriorityContract selector` | 选择器合法性、宝箱优先、按钮优先、战斗/出口/恢复守卫 |
-| `PositionReachable s n p` | 恰好 `n` 步安全移动可到达 `p` |
-| `PlannerStep s goals a` | planner 为目标集合输出安全第一步 `a` |
-| `CombatReflex s a` | 紧急攻击、格挡或安全撤退 |
-| `ActionForGoal s g a` | executor 将目标 `g` 转为动作 `a` |
-| `Shielded s raw out` | shield 将原始动作过滤为最终动作 |
+### 2.2 目标选择和优先级
 
-### 2.8 RL-based 策略变量
+`GoalAdmissible` 给出每类目标的合法前提，`RuleGoal` 描述 sticky 目标、宝箱、按钮、开关、战斗、
+出口、探索和等待等产生规则。`RulePriorityContract` 进一步约束选择器：存在未完成本地进度时
+不能提前恢复或等待；出口必须满足资源、清怪和记忆条件。
 
-#### 基础动作与特征类型
+主要结论包括：
 
-| 名称 | 构造或字段 | 含义 |
+- `rule_goal_admissible`：任何规则目标都满足目标合法性；
+- `selector_chest_first`：存在可达未开宝箱时必须优先开箱；
+- `selector_cannot_wait_with_progress`：存在具体进度时不能选择等待；
+- `priority_selector_goal_admissible`：整个优先链始终输出合法目标。
+
+### 2.3 Planner 和搜索
+
+`PositionReachable state depth target` 表示目标位置恰好经过 `depth` 次安全移动可达；
+`PlannerStep` 要求 planner 输出四向移动，并保证下一格 `isWalkable`。
+
+除抽象 planner 契约外，还形式化了可计算逐层搜索：
+
+- `safeActionsFrom` 过滤当前位置的安全四向动作；
+- `safeSuccessors` 计算一步后继；
+- `breadthFrontier state depth` 结构递归地产生恰好 `depth` 步的可达层；
+- `SafeMovePlan` 和 `VerifiedSearchResult` 保存动作计划及其安全证明。
+
+核心完备性结论为：
+
+```lean
+target ∈ breadthFrontier state depth ↔
+  PositionReachable state depth target
+```
+
+`breadth_search_sound_and_complete` 因而同时给出搜索可靠性与完备性，
+`safeMovePlan_exec` 证明提取出的计划确实能按公共 `Exec` 语义执行到目标。
+这里的完备性只针对固定状态、固定深度的安全移动图，不表示任意地图必然通关。
+
+### 2.4 Executor、动作约束和 Safety Shield
+
+`ActionForGoal` 把目标转换为交互、planner 第一步、出口推动作或等待。
+`ActionAllowed` 是 Rule-based 的动作约束：交互直接允许；普通移动必须走向 `isWalkable`；
+边界出门必须满足 `exitPushAllowed`。
+
+`Shielded state raw out` 放行安全动作和合法出口，将不安全移动替换为 `wait`。已证明：
+
+- `action_for_goal_allowed`：executor 输出满足动作约束；
+- `shielded_output_allowed`：shield 输出满足动作约束；
+- `shield_blocks_unsafe_movement`：危险移动只能被过滤为等待；
+- `shielded_rule_action_safe_position_or_exit`：最终移动安全或属于合法出门；
+- `rule_pipeline_output_allowed`：从目标选择到最终动作的完整管线合法；
+- `shielded_total`、`shielded_deterministic`：可控动作的 shield 输出存在且唯一。
+
+### 2.5 五关证明
+
+| 任务 | 规则检查点 | 完成定理 |
 | --- | --- | --- |
-| `PrimitiveAction` | `wait`, 四方向、`buttonA`, `buttonB` | 最终送入环境的七个 primitive 动作 |
-| `HighLevelAction` | `openChest`, `attackMonster`, `activateMechanism`, `takeNewExit`, `returnOrRevisit`, `exploreRoom`, `wait` | Task 1-4 的七个高层 option |
-| `Strategy.GoalKind` | 开箱、攻击、开关、按钮、出口、探索、等待 | RL option 解析后的目标类型 |
-| `TileLabel` | 地板、墙、宝箱、怪物、三类出口、陷阱、机关、gap、桥、NPC | 网格特征标签 |
-| `FeatureValue` | `tile`, `coord`, `clipped`, `flag`, `maskBit`, `oneHotBit`, `memoryCounter`, `signedCounter`, `missingMonster` | 有类型的单个特征值 |
-| `FeatureVector` | `values : List FeatureValue` | 模型输入向量 |
+| Task 1 | 开钥匙箱、通过锁门 | `rule_task1_completed` |
+| Task 2 | 击杀怪物、开箱、条件出口 | `rule_task2_completed` |
+| Task 3 | 多房间往返、怪物、钥匙箱、最终锁门 | `rule_task3_completed` |
+| Task 4 | 两次旋转桥、钥匙、剑、守卫、最终宝箱 | `rule_task4_completed` |
+| Task 5 | 四分支探索、怪物、按钮门、钥匙门、四宝箱 | `rule_task5_completed` |
 
-#### RL 编码视图
+每个检查点都构造具体 `RuleGoal`，证明规则关系在该状态允许预期目标；
+`all_rule_task_certificates` 汇总五个 `TaskCertificate`。这些证书证明的是标准符号路线安全并达到目标，
+不是把评测程序的每个 episode 预先写入 Lean。
 
-`Strategy.SymbolicState` 包含 `player`、`walls`、`chests`、`monsters`、`exits`、
-`traps`、`mechanisms`、`gaps`、`bridges`、`npcs`、`keys`、`gold`、`hasSword`、
-`hasShield` 和 `hasHeal`。它由公共状态通过 `ofSharedState` 产生。
+### 2.6 实验结果
 
-| 结构 | 字段 | 含义 |
-| --- | --- | --- |
-| `MemorySummary` | `visitedRooms`, `openedChests`, `killedMonsters`, `activatedSwitches`, `usedExits`, `roomSteps` | Task 1-4 的六个记忆计数器 |
-| `HighLevelInput` | `state`, `actionMask`, `lastOption`, `memory` | 115 维编码输入 |
-| `Task5StateView` | `base`, `normalExits`, `lockedExits`, `conditionalExits` | 保留出口分类的 Task 5 状态视图 |
-| `Task5MemorySummary` | 基础六项加 `roomX`, `roomY`, `elapsedSteps` | Task 5 的九个记忆/时间特征 |
-| `Task5HighLevelInput` | `state`, `actionMask`, `lastOption`, `memory` | 122 维编码输入 |
-| `PolicyInterface` | `optionCount`, `inputDim` | 模型动作数和输入维数 |
-| `SafeInfo` | `taskId` | 评测器传入的安全任务编号 |
+Rule-based 使用助教鲁棒性评测的正式结果保存在 `runs/final_evaluation.json`，
+每个任务 100 个 episode，共 500 个：
 
-#### Task 5 mask 上下文
+| Task | 原图 | 空间变体 | 颜色变体 | 总成功率 |
+| --- | ---: | ---: | ---: | ---: |
+| Task 1 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 2 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 3 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 4 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 5 | 60/60 | 0/30 | 10/10 | 70% |
+| 合计 | 300/300 | 120/150 | 50/50 | 470/500，94% |
 
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `rawMask` | `List Bool` | 环境产生的原始九位 mask |
-| `usedDirections` | `List Task5Action` | 已使用的方向出口 |
-| `lockedDirections` | `List Task5Action` | 当前钥匙门方向 |
-| `conditionalDirections` | `List Task5Action` | 当前条件门方向 |
-| `hasKey` | `Bool` | 当前是否持有钥匙 |
-| `attackIsProgress` | `Bool` | 当前怪物是否阻挡必要进度 |
+失败全部集中在 Task 5 空间变体。Lean 中的安全性和任务证书说明标准符号路线满足规范；
+实际鲁棒性结果则说明当前 Rule-based 实现仍需增强 Task 5 变体下的路径和战斗适应性。
 
-`PrimitiveDecision` 由 `action : PrimitiveAction` 和 `setupOnly : Bool` 组成。
-`setupOnly = true` 表示仅用于朝向或对齐；否则动作必须经过 `shield`。
+## 3. RL-based 策略形式化与证明
 
-### 2.9 强化证明使用的关系与证书
+### 3.1 形式化思路与模型接口
 
-| 名称 | 参数或字段 | 含义 |
-| --- | --- | --- |
-| `ProgressLe` | `before`, `after` | 六个累计任务里程碑逐字段不下降 |
-| `WorldCompletedMonotone` | `before`, `after` | 完成标志一旦为真就持续为真 |
-| `BaseMaskHasEnabled` | `mask : List Bool` | 基础七动作 mask 至少有一位可用 |
-| `Task5MaskHasEnabled` | `mask : List Bool` | Task 5 九动作 mask 至少有一位可用 |
-| `BaseRawMaskSound` | `state`, `raw` | 基础原始 mask 中每个启用 option 都满足环境 readiness |
-| `Task5RawMaskSound` | `state`, `context` | Task 5 原始 mask 中每个启用 option 都满足环境 readiness |
-| `AgentControllableAction` | `action` | Rule-based agent 可直接产生的等待、交互或四向移动 |
-| `CertificatesShareTrace` | 两个 `TaskCertificate` | 两份证书具有相同计划和最终状态 |
-| `SafeMovePlan` | `state`, `plan`, `target` | 从初始状态到目标位置的逐步安全移动见证 |
-| `VerifiedSearchResult` | `plan`, `target`, `target_mem`, `safe` | 可执行动作计划、目标成员关系及安全证明的组合证书 |
-
-## 3. 已形式化机制及对应函数
-
-### 3.1 公共环境机制
-
-| 机制 | 对应 Lean 定义或函数 | 形式化内容 |
-| --- | --- | --- |
-| 坐标和方向转换 | `actionOfDirection`, `directionOfAction`, `delta`, `nextPosition`, `nextRoom` | 动作与位移、跨房间坐标变化 |
-| 玩家朝向交互 | `facingTarget`, `inFront`, `adjacent`, `manhattan` | 面前一格和四邻域交互条件 |
-| 边界与门口 | `inBounds`, `isDoorExit`, `exitPushAllowed` | 合法网格范围和边界出口推动作 |
-| 桥与 gap | `activeBridges`, `toggleBridgeState` | 不同桥状态下可通行桥格及旋转切换 |
-| 地形通行 | `terrainPassable`, `isWalkable`, `SafePosition` | 墙、gap、宝箱、怪物、陷阱对移动安全的约束 |
-| 血量与失败 | `damageHealth`, `takeDamage`, `healHealth`, `AliveState`, `DeadState`, `TimedOut`, `FailedState` | 伤害、治疗、死亡和超时 |
-| Task 5 周期掉血 | `task5DrainDue`, `task5TimedDrainState`, `task5DrainInterval` | 每 200 个 tick 触发一次额外伤害 |
-| 环境时钟 | `advanceClock` | `steps` 增加一 |
-| 奖励应用 | `lootKeys`, `lootGold`, `applyLoot` | 钥匙、金币、治疗和装备更新 |
-| 宝箱交互 | `canOpenChestObject`, `removeChestObjectAt`, `openChestObjectState` | 面向宝箱、移除对象、应用奖励和记录里程碑 |
-| 怪物攻击 | `canAttackObject`, `damageMonsterObjectAt`, `attackMonsterObjectState` | 持剑攻击、扣除怪物血量、击杀与掉落 |
-| 怪物行动 | `monsterThreatens`, `monsterCanOccupy`, `monsterMoveAllowed`, `moveMonsterObjectAt`, `monsterDamageState` | 威胁判定、移动约束和接触伤害 |
-| NPC 对话 | `canTalkNpc` | NPC 必须在列表中并位于玩家面前 |
-| 盾牌 | `shieldBlockState` 及 `FullEnvStep.pressShield`、`monsterDamageBlocked` | 举盾和抵消一次怪物伤害 |
-| 按钮与开关 | `FullEnvStep.pressButton`, `FullEnvStep.pressSwitch`, `toggleBridgeState` | 记录按钮、切换桥并累计机关里程碑 |
-| 出口条件 | `exitCondition`, `canUseExitObject`, `keysAfterExit`, `useExitObjectState` | 五类门条件、钥匙消耗、换房和出生点更新 |
-| 终止条件 | `TerminalState` | 目标成立或失败时终止 |
-| 轻量一步语义 | `EnvStep` | 安全移动、陷阱、阻挡、轻量出口、开箱、攻击、机关、B 键和等待 |
-| 完整一步语义 | `FullEnvStep` | 结构化对象、按钮、开关、NPC、盾牌、出口、怪物 tick、周期掉血和时钟 |
-| 多步轨迹 | `Exec`, `FullExec`, `SafeFullExec` | 轻量轨迹、完整轨迹和逐状态无失败轨迹 |
-| 五关目标 | `Task1Goal` 至 `Task5Goal` | 每关完成标记和关键累计里程碑 |
-| 通关证书 | `CompletedBy`, `TaskCertificate` | 通关存在性与带安全轨迹的证书 |
-| BFS 抽象完备性 | `BoundedReachable`, `BoundedGoalReachable`, `BfsFrontierComplete`, `BfsFindsGoal` | 有界可达、frontier 覆盖和目标发现 |
-| 感知契约 | `ValidPixelFrame`, `PerceptionSound`, `ColorModeInvariant` | 像素输入形状、感知正确性和颜色模式不变性 |
-
-### 3.2 Rule-based 机制
-
-| 机制 | 对应 Lean 定义或函数 | 形式化内容 |
-| --- | --- | --- |
-| 记忆去重 | `noUnopenedChests`, `noUnusedMechanisms`, `noUnusedDoorExits` | 避免重复选择已完成对象 |
-| 房间耗尽判断 | `noVisibleChests`, `noVisibleSwitches`, `noVisibleButtons`, `roomExhaustedBeforeCombat` | 判断何时允许清怪 fallback |
-| 条件门准备 | `visibleButtonsSatisfied`, `conditionalDoorReady` | 按钮已满足且怪物前置条件完成 |
-| 目标合法性 | `ExitGoalAdmissible`, `GoalAdmissible` | 每类出口和目标的资源、对象、记忆前置条件 |
-| 位置可达 | `PositionReachable`, `PlannerCanReach` | 目标可由有限步安全移动到达 |
-| 规则目标生成 | `RuleGoal` | sticky、宝箱、怪物、按钮、开关、出口、探索和等待 |
-| 具体进度检测 | `HasReachableFreshChest`, `HasReachableFreshButton`, `HasReachableNewExit`, `HasReachableFreshSwitch`, `HasConcreteProgress` | 判断当前是否存在比恢复动作更高优先级的目标 |
-| 十二级优先链契约 | `RulePriorityContract` | 输出合法、宝箱/按钮优先、战斗/出口/恢复动作受守卫约束 |
-| 紧急战斗反射 | `CombatReflex` | 相邻攻击、有盾格挡和安全撤退 |
-| 目标邻接格 | `approachTiles` | 开箱、攻击和机关交互前的四个邻接 tile |
-| planner 第一步 | `PlannerStep` | 输出必须是走向目标集合的安全移动 |
-| planner 完备性 | `PlannerFrontierComplete`, `PlannerGoalReachable`, `PlannerFindsGoal` | frontier 不变量推出可达目标被发现 |
-| 出口推动作 | `exitPushAction`, `pushesOut` | 玩家站在边界门上时继续向外移动 |
-| action mask 规格 | `ActionAllowed` | 等待、交互、安全移动或合法出门 |
-| executor | `interactionKind`, `ActionForGoal` | 将目标转换成按键、规划移动、出门或等待 |
-| safety shield | `Shielded` | 放行安全动作，将不安全移动改成 `wait` |
-| 完整规则管线 | `RuleGoal` + `ActionForGoal` + `Shielded` | 从目标选择到最终动作的合法性和安全性 |
-
-### 3.3 RL-based 机制
-
-| 机制 | 对应 Lean 定义或函数 | 形式化内容 |
-| --- | --- | --- |
-| 公共状态投影 | `ofSharedState`, `task5ViewOfSharedState` | 从唯一公共环境状态得到模型输入视图 |
-| 网格枚举 | `allTiles` | 按行枚举 `10 × 8 = 80` 个 tile |
-| tile 编码 | `tileLabelAt`, `task5TileLabelAt`, `gridFeatures`, `task5GridFeatures` | 基础对象标签及 Task 5 三类出口标签 |
-| 玩家编码 | `coordFeature`, `playerFeatures` | 两个裁剪坐标特征 |
-| 怪物编码 | `monsterBefore`, `orderedMonsters`, `monsterSlotFeatures`, `monsterFeatures` | 按距离和坐标稳定排序，保留四个怪物槽位 |
-| 背包编码 | `clippedFeature`, `inventoryFeatures` | 钥匙、金币、剑、盾和治疗标记 |
-| 记忆编码 | `memoryFeature`, `signedMemoryFeature`, `memoryFeatures`, `task5MemoryFeatures` | 基础六项及 Task 5 房间坐标、时间信息 |
-| mask/历史编码 | `fixedMaskFeatures`, `oneHotForLast`, `task5FixedMaskFeatures`, `task5OneHotForLast` | 当前 action mask 和上一 option one-hot |
-| 特征合法性 | `FeatureValue.Valid`, `FeaturesValid`, `WellFormedFeatures`, `Task5WellFormedFeatures` | 分母为正、数值裁剪合法、总长度正确 |
-| 115 维编码 | `encodeHighLevelState`, `featureDim` | `80 + 2 + 8 + 5 + 7 + 7 + 6 = 115` |
-| 122 维编码 | `encodeTask5State`, `task5FeatureDim` | `80 + 2 + 8 + 5 + 9 + 9 + 9 = 122` |
-| 七动作 option 解析 | `actionIndex`, `actionAtMask`, `canonicalGoalForOption`, `CompatibleGoal`, `resolveFromMask` | mask 中的基础 option 解析为兼容目标 |
-| 七动作策略契约 | `MaskablePolicy`, `RespectsMask` | 抽象策略必须只选择 mask 为真的 option |
-| 基础优先 mask | `prioritizedAttackAllowed`, `localProgress`, `prioritizedReturnAllowed`, `firstResolvedProgress`, `normalizedMask` | 宝箱/机关压制攻击，新出口/本地进度压制回退，进度压制探索和等待 |
-| Task 5 九动作 | `Task5Action`, `task5ActionIndex`, `task5ActionAtMask` | 四个方向出口组成九个高层 option |
-| Task 5 option 解析 | `task5CanonicalGoalForOption`, `Task5CompatibleGoal`, `task5ResolveFromMask` | 九动作 option 解析为兼容目标 |
-| Task 5 出口优先 | `task5PreferredDirections`, `task5DirectionUsed`, `task5HasNewExit`, `task5ExitBit` | 钥匙门/条件门方向选择和已用出口抑制 |
-| Task 5 本地进度优先 | `task5ChestBit`, `task5MechanismBit`, `task5AttackBit`, `task5ConcreteProgress` | 宝箱、机关与阻路怪物的优先关系 |
-| Task 5 最终 mask | `task5NormalizedMask`, `Task5MaskContext` | 九位 mask、恢复动作抑制和等待兜底 |
-| task_id 接口选择 | `TaskId`, `PolicyInterface`, `interfaceFor`, `interfaceFromSafeInfo` | Task 1-4 选择 7/115，Task 5 选择 9/122 |
-| primitive 安全 | `isMove`, `isBlocked`, `safeTile`, `shield`, `appliedPrimitive` | 非 setup 移动经过最终安全过滤 |
-| 环境 readiness | `chestReady`, `monsterReady`, `mechanismReady`, `exitReady`, `task5DirectionalExitReady` | Bool 判定与公共环境可执行谓词连接 |
-| 固定 mask 输入 | `baseRawMask`, `task5RawMask`, `baseInputFromShared`, `task5InputFromShared` | 构造固定长度 mask 和模型输入 |
-| RL 检查点 | `BaseCheckpoint`, `Task5Checkpoint` | 同时要求 mask 允许、resolver 成功和环境对象可执行 |
-
-### 3.4 强化证明机制
-
-| 机制 | 对应 Lean 定义或函数 | 形式化内容 |
-| --- | --- | --- |
-| 安全轨迹组合 | `safeFullExec_append`, `safeFullExec_final_not_failed` | 分段安全轨迹拼接以及最终状态非失败 |
-| 累计进度偏序 | `ProgressLe`, `fullEnvStep_progressLe`, `fullExec_progressLe`, `safeFullExec_progressLe` | 六个累计里程碑从一步到多步均不下降 |
-| 完成标志保持 | `WorldCompletedMonotone`, `fullEnvStep_worldCompletedMonotone`, `fullExec_worldCompletedMonotone` | 世界完成后不会被后续转移撤销 |
-| mask 非空兜底 | `BaseMaskHasEnabled`, `Task5MaskHasEnabled`, `normalizedMask_enabled_exists`, `task5NormalizedMask_enabled_exists` | 七动作和九动作最终 mask 都至少保留一个 option |
-| mask 保守过滤 | `normalizedMask_nonwait_conservative`, `task5NormalizedMask_nonwait_conservative` | 除等待兜底外，最终 mask 不创建原始 mask 未允许的 option |
-| mask readiness 契约 | `BaseRawMaskSound`, `Task5RawMaskSound`, `normalizedMask_sound`, `task5NormalizedMask_sound` | 原始 mask 可靠性沿优先级过滤传递到最终 mask |
-| 策略接口闭环 | `mask_respecting_policy_ready_resolution`, `task5_mask_respecting_policy_ready_resolution` | 策略所选 option 可解析、目标兼容且环境 ready |
-| RL shield 代数性质 | `shield_preserves_safe_move`, `shield_idempotent`, `shield_move_output_safe` | 安全动作保持、重复过滤稳定、最终移动安全 |
-| Rule shield 函数性 | `AgentControllableAction`, `shielded_total`, `shielded_deterministic`, `shielded_exists_unique` | 可控动作的 shield 输出存在且唯一 |
-| 颜色模式提升 | `color_mode_base_features_invariant`, `color_mode_task5_features_invariant`, `color_mode_base_policy_output_invariant`, `color_mode_task5_policy_output_invariant` | 感知不变性提升到编码和策略输出 |
-| 门前置条件反演 | `buttonGate_exit_requires_pressed`, `allMonstersAndKey_exit_requires_resources`, `itemGate_exit_requires_item`, `fullEnvStep_useExit_has_usable_exit` | 从合法出门步骤恢复按钮、钥匙、清怪或装备条件 |
-| 双路线证书一致性 | `CertificatesShareTrace`, `all_route_certificates_share_trace` | Task 1-5 的 Rule/RL 证书共享公共计划和最终状态 |
-| 可计算安全后继 | `safeActionsFrom`, `safeSuccessors`, `isWalkable_decidable` | 过滤四向动作并计算一步安全后继 |
-| 逐层搜索 | `breadthFrontier`, `breadthFindsGoal` | 对深度结构递归，计算精确步数的安全可达层和目标命中 Bool |
-| 搜索计划证书 | `SafeMovePlan`, `VerifiedSearchResult` | 将搜索命中提升为可执行计划及其安全见证 |
-
-## 4. 已证明性质与定理
-
-### 4.1 `Environment.lean` 定理
-
-#### 感知、方向与轨迹基础
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `color_mode_invariant_extract_eq` | 颜色模式不变契约直接推出任意两种模式提取结果相同 |
-| `actionOfDirection_mem_movementActions` | 任意方向对应动作都属于四方向移动集合 |
-| `safeFullExec_to_fullExec` | 无失败轨迹可遗忘安全见证得到普通完整轨迹 |
-| `taskCertificate_completedBy` | 安全任务证书推出任务完成存在性 |
-
-#### 移动、执行和资源不变量
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `walkable_terrain_passable` | 安全可走蕴含地形可通过 |
-| `walkable_is_safe_position` | 安全可走蕴含目标位置安全 |
-| `move_safe_player_eq` | `EnvStep.moveSafe` 后玩家位置等于 `nextPosition` |
-| `move_blocked_player_eq` | 阻挡移动保持玩家位置不变 |
-| `safe_move_preserves_safe_position` | 安全移动的终点满足 `SafePosition` |
-| `open_chest_increases_keys` | 轻量开箱使钥匙数增加一 |
-| `attack_monster_removes_target` | 轻量攻击从怪物列表移除目标 |
-| `activate_switch_records` | 机关交互把位置加入 `activated` |
-| `env_step_keys_monotone` | 轻量一步语义中钥匙数量不下降 |
-| `exec_append` | 两段轻量执行轨迹可以拼接 |
-| `exec_keys_monotone` | 轻量多步轨迹中钥匙数量不下降 |
-| `env_step_is_full_step` | 任意轻量一步都可提升为完整一步 |
-| `full_exec_append` | 两段完整执行轨迹可以拼接 |
-
-#### 血量、对象、机关和出口不变量
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `takeDamage_preserves_player` | 扣血不改变玩家位置 |
-| `task5TimedDrainState_preserves_player` | Task 5 周期掉血不改变玩家位置 |
-| `takeDamage_some_health_eq` | 已知血量时扣血结果为截断减法 |
-| `healHealth_preserves_player` | 治疗不改变玩家位置 |
-| `healHealth_some_le_maxHealth` | 治疗后的已知血量不超过最大血量 |
-| `advanceClock_steps_eq` | 环境时钟使步数精确增加一 |
-| `advanceClock_preserves_player` | 时钟推进不改变玩家位置 |
-| `apply_key_loot_keys` | 钥匙奖励正确更新当前和累计钥匙数 |
-| `apply_gold_loot_gold` | 金币奖励正确更新金币数 |
-| `apply_item_loot_items` | 装备奖励被加入背包 |
-| `applyLoot_preserves_player` | 应用任意奖励不改变玩家位置 |
-| `openChestObjectState_preserves_player` | 结构化开箱不改变玩家位置 |
-| `attackMonsterObjectState_preserves_player` | 结构化攻击不改变玩家位置 |
-| `canTalkNpc_listed`、`canTalkNpc_in_front` | 可对话 NPC 必须在列表中且位于玩家面前 |
-| `monsterThreatens_listed`、`monsterThreatens_alive` | 威胁玩家的怪物必须在列表中且存活 |
-| `monsterMoveAllowed_target_inBounds`、`monsterMoveAllowed_target_not_wall` | 合法怪物移动终点在界内且不是墙 |
-| `monsterDamageState_preserves_player` | 怪物伤害不改变玩家位置 |
-| `shieldBlockState_shieldUp_false` | 抵挡后举盾状态被清除 |
-| `shieldBlockState_preserves_player` | 盾牌抵挡不改变玩家位置 |
-| `pressButton_records_player` | 按钮动作记录玩家所在按钮 |
-| `pressButton_preserves_player` | 按钮动作不改变玩家位置 |
-| `toggleBridge_twice` | 桥状态连续切换两次回到原状态 |
-| `pressSwitch_preserves_player` | 开关动作不改变玩家位置 |
-| `canUseExitObject_listed`、`canUseExitObject_at_player` | 可用出口必须在对象列表中且位于玩家脚下 |
-| `useExitObject_room_eq`、`useExitObject_player_eq` | 使用出口后房间和出生位置等于出口目标字段 |
-| `lockedExit_condition_implies_enough_keys` | 锁门条件成立蕴含钥匙数量满足要求 |
-
-#### 失败、终止和搜索
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `terminal_of_goal` | 目标成立推出终止状态 |
-| `terminal_of_failed` | 失败状态推出终止状态 |
-| `failed_of_dead` | 死亡推出失败 |
-| `failed_of_timedOut` | 超时推出失败 |
-| `bfs_completeness_from_frontier_invariant` | frontier 覆盖有界可达状态且目标有界可达时，BFS 一定找到目标 |
-
-#### 五关公共参考场景
-
-| 任务 | 公开定理 | 性质 |
-| --- | --- | --- |
-| Task 1 | `task1_safe_execution`, `task1_goal` | 计划形成无失败轨迹，终态满足钥匙箱和出口目标 |
-| Task 2 | `task2_safe_execution`, `task2_goal`, `task2_exit_blocked_while_monster_alive` | 证明击杀、开箱、条件门通关，并证明活怪物存在时门被阻挡 |
-| Task 3 | `task3_safe_execution`, `task3_goal`, `task3_final_exit_blocked_without_key` | 证明跨房取钥匙并返回锁门，且无钥匙不能通过最终门 |
-| Task 4 | `task4_safe_execution`, `task4_goal`, `task4_east_gate_does_not_consume_key`, `task4_guardian_requires_sword` | 证明两次旋桥、取钥匙/剑、击杀守卫和最终开箱 |
-| Task 5 | `task5_safe_execution`, `task5_goal`, `task5_south_gate_blocked_before_button`, `task5_east_gate_blocked_without_key` | 证明按钮门、钥匙门和四宝箱路线 |
-| Task 5 掉血 | `task5_drain_example_due`, `task5_drain_example_survives` | 200 步时掉血触发，示例状态掉血后仍存活 |
-
-Task 4 的内部轨迹连接引理为：
+RL 路线不在 Lean 中展开 PPO 网络权重，而是验证网络外侧可检查的接口：
 
 ```text
-task4_step_switch1
-task4_step_to_center
-task4_step_to_north
-task4_step_open_key
-task4_step_back_for_east
-task4_step_to_east
-task4_step_open_sword
-task4_step_back_to_switch
-task4_step_switch2
-task4_step_to_south
-task4_step_kill_guardian
-task4_step_back_to_final
-task4_step_open_final
+像素 -> 符号状态 -> 特征编码 -> PPO option
+     -> action mask -> goal resolver -> primitive shield -> 环境动作
 ```
 
-Task 5 的内部轨迹连接引理为：
+神经网络被抽象为 `MaskablePolicy` 或 `Task5MaskablePolicy`。
+`RespectsMask` 和 `Task5RespectsMask` 要求模型只选择最终 mask 中为真的 option。
+因此 Lean 结论是条件式的：只要模型遵守 mask，后续解析和执行层就满足已经证明的规范；
+并不声称任意权重或任意输入上的 logits 都正确。
 
-```text
-task5_step_open_start
-task5_step_to_west
-task5_step_kill_west_monster
-task5_step_open_west
-task5_step_back_to_button
-task5_step_press_button
-task5_step_to_south
-task5_step_open_south
-task5_step_back_to_east_gate
-task5_step_to_east
-task5_step_open_east
-```
+### 3.2 符号特征编码
 
-### 4.2 `Rule_based_Strategy.lean` 定理
+`ofSharedState` 将公共环境状态投影到 RL 编码视图。Task 1-4 的 `encodeHighLevelState` 使用
+80 个网格标签、玩家坐标、四个怪物槽、背包、七位 mask、上一 option 和记忆，共 115 维；
+Task 5 的 `encodeTask5State` 额外保留方向出口和九位接口，共 122 维。
 
-| 定理 | 已证明性质 |
-| --- | --- |
-| `exit_goal_admissible_mem_allExits` | 合法出口目标一定属于公共出口集合 |
-| `planner_can_reach_player` | 玩家当前位置零步可达 |
-| `rule_goal_admissible` | 任意 `RuleGoal` 输出都满足 `GoalAdmissible` |
-| `selector_chest_first` | 存在可达未开宝箱时，满足契约的选择器必须选开箱 |
-| `selector_cannot_wait_with_progress` | 存在具体进度时，满足契约的选择器不能等待 |
-| `priority_selector_goal_admissible` | 优先链选择器输出始终合法 |
-| `combat_reflex_action_allowed` | 紧急攻击、格挡和撤退均满足动作约束 |
-| `planner_step_safe` | planner 第一步是移动且终点 `isWalkable` |
-| `planner_completeness_from_frontier_invariant` | 完整 frontier 会发现有界可达目标 |
-| `planner_finds_singleton_of_reachable` | 单目标可达时完整 frontier 包含该目标 |
-| `action_for_goal_move_safe_or_exit` | executor 输出的移动安全或属于合法出门 |
-| `action_for_goal_allowed` | executor 输出满足 `ActionAllowed` |
-| `shielded_move_safe_or_exit` | shield 后仍为移动时，该移动安全或合法出门 |
-| `shielded_output_allowed` | shield 最终输出满足 `ActionAllowed` |
-| `shield_blocks_unsafe_movement` | 不安全且非出门的移动只能被过滤为 `wait` |
-| `raw_rule_action_safe_or_exit` | 规则目标经 executor 后的原始移动安全或合法出门 |
-| `shielded_rule_action_safe_or_exit` | 完整规则管线的最终移动安全或合法出门 |
-| `shielded_rule_action_safe_position_or_exit` | 最终移动不会主动进入危险位置 |
-| `rule_pipeline_output_allowed` | `RuleGoal + ActionForGoal + Shielded` 的最终输出满足 action mask 规格 |
+已证明：
 
-### 4.3 `Rule_based_TaskProofs.lean` 定理
+- `allTiles_length` 和 `allTiles_contains`：10×8 的 80 个格子被完整枚举；
+- `encodeHighLevelState_wellFormed`：基础特征长度为 115，且每个值满足范围约束；
+- `encodeTask5State_wellFormed`：Task 5 特征长度为 122，且每个值合法；
+- `safeInfo_selects_exact_interface`：task id 精确选择 7/115 或 9/122 接口；
+- `color_mode_base_features_invariant` 和 `color_mode_task5_features_invariant`：满足感知契约时颜色模式不改变编码。
 
-| 任务 | 策略检查点定理 | 通关定理 |
+### 3.3 Action Mask、优先级和 Goal Resolver
+
+基础接口有七个高层 option：开箱、攻击、机关、新出口、返回/重访、探索、等待。
+Task 5 将出口细分为东南西北四个方向，因此共有九个 option。
+
+`normalizedMask` 和 `task5NormalizedMask` 在环境原始 mask 上执行优先级过滤：
+
+- 宝箱或机关存在时抑制不必要攻击；
+- 有本地进度时抑制出口、探索和等待；
+- Task 5 阻路怪物优先于本地交互；
+- 有钥匙时优先锁门方向，无钥匙时优先条件门方向；
+- 新出口存在时抑制已使用出口；
+- 没有任何具体进度时启用探索或等待兜底。
+
+`resolveFromMask` 和 `task5ResolveFromMask` 把 option 解析为兼容的符号目标。
+关键定理包括：
+
+- `normalizedMask_enabled_exists`、`task5NormalizedMask_enabled_exists`：最终 mask 始终非空；
+- `normalizedMask_nonwait_conservative`、`task5NormalizedMask_nonwait_conservative`：除等待兜底外不会创建原始 mask 未允许的 option；
+- `normalizedMask_sound`、`task5NormalizedMask_sound`：原始 mask 满足 readiness 时，最终 mask 仍然可靠；
+- `mask_respecting_policy_ready_resolution`、`task5_mask_respecting_policy_ready_resolution`：模型选择可解析为兼容且环境 ready 的目标。
+
+### 3.4 Primitive Safety Shield
+
+`PrimitiveDecision` 保存 primitive 动作和 `setupOnly` 标记；非 setup 移动通过 `shield` 检查
+`safeTile`。不安全移动被替换为等待，交互动作保持不变。
+
+已证明 `shield_preserves_safe_move`、`shield_idempotent` 和 `shield_move_output_safe`：
+安全移动不会被改写，重复过滤结果不变，且 shield 最终保留的移动一定指向安全 tile。
+
+### 3.5 五关证明
+
+| 任务 | RL 检查点 | 完成定理 |
 | --- | --- | --- |
-| Task 1 | `task1_rule_chest_checkpoint`, `task1_rule_locked_exit_checkpoint` | `rule_task1_completed` |
-| Task 2 | `task2_rule_monster_checkpoint`, `task2_rule_chest_checkpoint`, `task2_rule_conditional_exit_checkpoint` | `rule_task2_completed` |
-| Task 3 | `task3_rule_start_exit_checkpoint`, `task3_rule_hall_monster_checkpoint`, `task3_rule_key_chest_checkpoint`, `task3_rule_final_locked_exit_checkpoint` | `rule_task3_completed` |
-| Task 4 | `task4_rule_first_switch_checkpoint`, `task4_rule_key_chest_checkpoint`, `task4_rule_east_locked_exit_checkpoint`, `task4_rule_sword_chest_checkpoint`, `task4_rule_second_switch_checkpoint`, `task4_rule_guardian_checkpoint`, `task4_rule_final_chest_checkpoint` | `rule_task4_completed` |
-| Task 5 | `task5_rule_start_chest_checkpoint`, `task5_rule_west_exit_checkpoint`, `task5_rule_west_monster_checkpoint`, `task5_rule_west_chest_checkpoint`, `task5_rule_button_checkpoint`, `task5_rule_conditional_exit_checkpoint`, `task5_rule_south_chest_checkpoint`, `task5_rule_east_locked_exit_checkpoint`, `task5_rule_east_chest_checkpoint` | `rule_task5_completed` |
+| Task 1 | 开箱 option、锁门 option | `rl_task1_completed` |
+| Task 2 | 攻击、开箱、条件出口 | `rl_task2_completed` |
+| Task 3 | 出口往返、怪物、钥匙箱、最终锁门 | `rl_task3_completed` |
+| Task 4 | 开关、钥匙、锁门、剑、守卫、最终宝箱 | `rl_task4_completed` |
+| Task 5 | 宝箱、阻路怪物、按钮、南门、返回、东侧锁门 | `rl_task5_completed` |
 
-每个检查点构造一个具体 `RuleGoal`，证明该目标可由规则关系产生。
-`all_rule_task_certificates` 同时给出 Task 1-5 的 `CompletedBy` 结论。
+每个 RL 检查点同时证明三件事：最终 mask 允许预期 option，resolver 得到兼容目标，
+对应公共环境对象满足 readiness。`all_rl_tasks_completed` 汇总五个安全任务证书。
 
-### 4.4 `RL_based_Strategy.lean` 定理
+### 3.6 实验结果
 
-#### 状态投影、option 与基础 mask
+`rl` 分支的正式结果 `results/rl_robustness_official_500.json` 使用纯 PPO 高层策略，
+同样按每个任务 100 个 episode 运行：
 
-| 定理组 | 已证明性质 |
-| --- | --- |
-| `ofSharedState_player`, `ofSharedState_inventory`, `ofSharedState_objects` | 公共状态投影保持玩家、资源和关键对象字段 |
-| `allTiles_length`, `allTiles_contains` | 网格枚举恰有 80 格，并覆盖所有合法自然数坐标 |
-| `canonicalGoal_compatible` | 每个基础 option 的规范目标都与该 option 兼容 |
-| `activateMechanism_allows_pressed_button`, `activateMechanism_allows_rotating_switch` | 机关 option 同时兼容按钮和旋转开关 |
-| `resolve_some_of_mask_true`, `resolve_none_of_mask_false` | mask 位为真时 resolver 返回目标，为假时返回 `none` |
-| `mask_respecting_policy_resolves` | 尊重 mask 的策略输出总能解析为兼容目标 |
-| `normalizedMask_length` | 基础最终 mask 长度恒为 7 |
-| `normalizedMask_attack_disabled_of_chest` | 有宝箱 option 时关闭主动攻击 |
-| `normalizedMask_attack_disabled_of_mechanism` | 有机关 option 时关闭主动攻击 |
-| `normalizedMask_return_disabled_of_new_exit` | 有新出口时关闭返回/重访 |
-| `normalizedMask_return_disabled_of_local_progress` | 有本地进度时关闭返回/重访 |
-| `normalizedMask_explore_disabled_of_resolved_progress` | 有确定进度时关闭探索 |
-| `normalizedMask_wait_disabled_of_resolved_progress` | 有确定进度时关闭等待 |
-| `normalizedMask_wait_fallback` | 无进度且不能探索时重新打开等待，保证 mask 非空 |
+| Task | 原图 | 空间变体 | 颜色变体 | 总成功率 |
+| --- | ---: | ---: | ---: | ---: |
+| Task 1 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 2 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 3 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 4 | 60/60 | 30/30 | 10/10 | 100% |
+| Task 5 | 60/60 | 0/30 | 10/10 | 70% |
+| 合计 | 300/300 | 120/150 | 50/50 | 470/500，94% |
 
-#### 115 维特征编码
+RL 的全部 30 次失败都来自 Task 5 空间变体，终止原因为 `agent_dead`；原图和五种颜色模式全部通过。
+这与形式化边界一致：Lean 已验证 mask、resolver 和 shield 的接口性质，但模型仍可能在合法动作中
+做出长期回报较差的选择，尤其是变化后的战斗位置和路线。
 
-| 定理组 | 已证明性质 |
-| --- | --- |
-| `tileLabelAt_player` | 玩家格编码为 floor，不额外引入玩家 tile 类别 |
-| `gridFeatures_length` | 网格特征长度为 80 |
-| `playerFeatures_length` | 玩家坐标特征长度为 2 |
-| `monsterSlotFeatures_length` | 单个怪物槽长度为 2 |
-| `orderedMonsters_perm`, `orderedMonsters_length` | 排序保持怪物多重集合和长度 |
-| `monsterFeatures_length` | 四个怪物槽总长度为 8 |
-| `inventoryFeatures_length` | 背包特征长度为 5 |
-| `fixedMaskFeatures_length` | 基础 mask 特征长度为 7 |
-| `oneHotForLast_length` | 上一 option one-hot 长度为 7 |
-| `memoryFeatures_length` | 基础记忆特征长度为 6 |
-| `featuresValid_append` | 两段合法特征拼接后仍合法 |
-| `coordFeature_valid`, `clippedFeature_valid`, `memoryFeature_valid`, `signedMemoryFeature_valid` | 各类裁剪数值特征满足分母和范围约束 |
-| `gridFeatures_valid`, `playerFeatures_valid`, `monsterSlotFeatures_valid`, `monsterFeatures_valid` | 网格、玩家和怪物特征值均合法 |
-| `inventoryFeatures_valid`, `fixedMaskFeatures_valid`, `oneHotForLast_valid`, `memoryFeatures_valid` | 背包、mask、历史和记忆特征值均合法 |
-| `encodeHighLevelState_wellFormed` | 完整基础编码长度为 115，且每个特征值合法 |
+## 4. Lean 代码命名、证明结构与验证
 
-#### Task 5 编码、接口和 mask
+Lean 代码采用统一命名规则：
 
-| 定理组 | 已证明性质 |
-| --- | --- |
-| `task5CanonicalGoal_compatible` | 每个 Task 5 option 的规范目标都兼容 |
-| `task5_resolve_some_of_mask_true`, `task5_resolve_none_of_mask_false` | Task 5 resolver 与 mask 位一致 |
-| `task5_mask_respecting_policy_resolves` | 尊重九位 mask 的策略输出可解析为兼容目标 |
-| `task5ViewOfSharedState_classifies_exits` | Task 5 投影保持普通、锁门和条件门分类 |
-| `task5TileLabelAt_player` | Task 5 中玩家格编码为 floor |
-| `task5GridFeatures_length` | Task 5 网格特征长度为 80 |
-| `task5FixedMaskFeatures_length` | Task 5 mask 特征长度为 9 |
-| `task5OneHotForLast_length` | Task 5 上一 option one-hot 长度为 9 |
-| `task5MemoryFeatures_length` | Task 5 记忆特征长度为 9 |
-| `task5GridFeatures_valid`, `task5FixedMaskFeatures_valid`, `task5OneHotForLast_valid`, `task5MemoryFeatures_valid` | Task 5 各特征段值域合法 |
-| `encodeTask5State_wellFormed` | Task 5 完整编码长度为 122，且每个值合法 |
-| `task1_interface`, `task2_interface`, `task3_interface`, `task4_interface` | Task 1-4 接口均为 7 个 option、115 维输入 |
-| `task5_interface` | Task 5 接口为 9 个 option、122 维输入 |
-| `safeInfo_selects_exact_interface` | `SafeInfo.taskId` 精确决定模型接口 |
-| `task5_exit_north_disabled_of_local_resource`, `task5_exit_east_disabled_of_local_resource`, `task5_exit_south_disabled_of_local_resource`, `task5_exit_west_disabled_of_local_resource` | 存在本地宝箱或机关时四个方向出口全部关闭 |
-| `task5NormalizedMask_length` | Task 5 最终 mask 长度恒为 9 |
-| `task5_locked_directions_preferred` | 有钥匙且存在锁门方向时优先锁门方向 |
-| `task5_conditional_directions_preferred_without_key` | 无钥匙时优先条件门方向 |
-| `task5_nonpreferred_exit_disabled` | 存在优选方向时关闭非优选出口 |
-| `task5_used_exit_disabled_when_frontier_exists` | 存在新出口时关闭已用出口 |
-| `task5_all_exits_disabled_of_local_resource` | 本地资源存在时四个出口位均为假 |
-| `task5_chest_precedes_mechanism_without_blocking_monster` | 无阻路怪物时宝箱优先于机关 |
-| `task5_optional_attack_disabled_in_resource_room` | 资源房中关闭非必要攻击 |
-| `task5_blocking_attack_precedes_local_interaction` | 阻路怪物优先于宝箱和机关 |
-| `task5_recovery_disabled_of_concrete_progress` | 有具体进度时关闭探索和等待 |
-| `task5_wait_fallback` | 无具体进度且不能探索时启用等待 |
+- 类型和关系使用清晰的 PascalCase，如 `SymbolicState`、`FullEnvStep`、`SafeFullExec`、`RuleGoal`；
+- 可计算函数使用 camelCase，如 `nextPosition`、`normalizedMask`、`breadthFrontier`；
+- 定理使用 snake_case，并用 `rule_`、`rl_` 或 `taskN_` 标明路线和任务；
+- 公共环境位于 `MathLogic.Formalization`，两条策略分别位于 `RuleBasedSubmission.Formalization` 和 `RLBasedSubmission.Formalization`。
 
-#### Primitive shield
+证明按“定义 -> 通用引理 -> 策略安全定理 -> 关卡检查点 -> 任务证书”组织。
+公共状态和转移只定义一次；Rule-based 与 RL-based 分别导入公共环境，不复制环境语义。
+所有 Lean 文件均不含 `sorry`、`admit` 或额外 `axiom`。
 
-| 定理 | 已证明性质 |
-| --- | --- |
-| `shared_walkable_projects_to_safe` | 公共环境中的可走位置投影后满足 RL `safeTile`，额外要求不是 NPC |
-| `shielded_non_setup_move_safe` | 非 setup 决策经过 shield 后，如果仍输出移动，则目标 tile 安全 |
-
-### 4.5 `RL_based_TaskProofs.lean` 定理
-
-#### Readiness 与公共环境语义等价
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `chestObjectReady_iff` | 单个宝箱 Bool readiness 等价于 `canOpenChestObject` |
-| `monsterObjectReady_iff` | 单个怪物 Bool readiness 等价于 `canAttackObject` |
-| `exitConditionReady_iff` | Bool 出口条件等价于公共 `exitCondition` |
-| `exitObjectReady_iff` | 单个出口 Bool readiness 等价于 `canUseExitObject` |
-| `chestReady_iff` | 开箱 option ready 等价于存在可打开宝箱 |
-| `monsterReady_iff` | 攻击 option ready 等价于存在可攻击怪物 |
-| `mechanismReady_iff` | 机关 ready 等价于玩家位于按钮或开关位置 |
-| `exitReady_iff` | 出口 option ready 等价于存在可用出口 |
-
-#### 输入与检查点通用性质
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `base_shared_input_wellFormed` | 任意公共状态生成的基础输入满足 115 维特征契约 |
-| `task5_shared_input_wellFormed` | 任意公共状态和 Task 5 上下文生成的输入满足 122 维契约 |
-| `every_base_checkpoint_goal_compatible` | 任意基础检查点 option 的规范目标都兼容 |
-| `every_task5_checkpoint_goal_compatible` | 任意 Task 5 检查点 option 的规范目标都兼容 |
-
-#### 五关 RL 检查点与通关
-
-| 任务 | 检查点定理 | 通关定理 |
-| --- | --- | --- |
-| Task 1 | `task1_rl_chest_checkpoint`, `task1_rl_locked_exit_checkpoint` | `rl_task1_completed` |
-| Task 2 | `task2_rl_monster_checkpoint`, `task2_rl_chest_checkpoint`, `task2_rl_conditional_exit_checkpoint` | `rl_task2_completed` |
-| Task 3 | `task3_rl_start_exit_checkpoint`, `task3_rl_hall_monster_checkpoint`, `task3_rl_key_chest_checkpoint`, `task3_rl_return_from_key_room_checkpoint`, `task3_rl_return_to_start_checkpoint`, `task3_rl_final_locked_exit_checkpoint` | `rl_task3_completed` |
-| Task 4 | `task4_rl_first_switch_checkpoint`, `task4_rl_key_chest_checkpoint`, `task4_rl_east_locked_exit_checkpoint`, `task4_rl_sword_chest_checkpoint`, `task4_rl_second_switch_checkpoint`, `task4_rl_guardian_checkpoint`, `task4_rl_final_chest_checkpoint` | `rl_task4_completed` |
-| Task 5 | `task5_rl_start_chest_checkpoint`, `task5_rl_west_exit_checkpoint`, `task5_rl_blocking_monster_checkpoint`, `task5_rl_west_chest_checkpoint`, `task5_rl_button_checkpoint`, `task5_rl_conditional_south_exit_checkpoint`, `task5_rl_south_chest_checkpoint`, `task5_rl_return_north_checkpoint`, `task5_rl_locked_east_exit_checkpoint`, `task5_rl_east_chest_checkpoint` | `rl_task5_completed` |
-
-`task5_rl_button_option_accepts_button_goal` 另外证明 Task 5 的 `activateMechanism`
-option 可以合法解析为按钮目标。`all_rl_tasks_completed` 同时给出五关完成结论。
-
-### 4.6 `Additional_Proofs.lean` 定理
-
-#### 安全轨迹、里程碑与完成标志
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `safeFullExec_final_not_failed` | 安全完整执行的最终状态不可能死亡或超时 |
-| `safeFullExec_append` | 两段 `SafeFullExec` 可以首尾拼接 |
-| `progressLe_refl`, `progressLe_trans` | 累计进度关系自反且可传递 |
-| `envStep_progressLe` | 任意轻量环境步骤保持累计里程碑不下降 |
-| `applyLoot_progressLe` | 应用任意奖励不降低累计里程碑 |
-| `openChestObjectState_progressLe` | 结构化开箱状态更新不降低累计里程碑 |
-| `attackMonsterObjectState_progressLe` | 结构化攻击状态更新不降低累计里程碑 |
-| `takeDamage_progressLe`, `task5TimedDrainState_progressLe` | 伤害和周期掉血不降低累计里程碑 |
-| `fullEnvStep_progressLe` | 任意完整一步保持累计进度单调 |
-| `fullExec_progressLe`, `safeFullExec_progressLe` | 普通/安全完整多步执行保持累计进度单调 |
-| `worldCompletedMonotone_refl`, `worldCompletedMonotone_trans` | 世界完成保持关系自反且可传递 |
-| `envStep_worldCompletedMonotone` | 轻量步骤不会撤销完成标志 |
-| `openChestObjectState_worldCompletedMonotone`, `attackMonsterObjectState_worldCompletedMonotone` | 开箱或攻击对象不会撤销完成标志 |
-| `fullEnvStep_worldCompletedMonotone` | 完整一步不会撤销完成标志 |
-| `fullExec_worldCompletedMonotone`, `safeFullExec_worldCompletedMonotone` | 普通/安全完整执行不会撤销完成标志 |
-
-#### Mask 非空、保守性与策略 readiness
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `normalizedMask_has_enabled`, `normalizedMask_enabled_exists` | 基础最终 mask 至少启用一个七动作 option |
-| `task5ConcreteProgress_cases` | Task 5 具体进度可分解为宝箱、攻击、机关或四方向出口之一 |
-| `task5NormalizedMask_has_enabled`, `task5NormalizedMask_enabled_exists` | Task 5 最终 mask 至少启用一个九动作 option |
-| `normalizedMask_nonwait_conservative` | 基础最终 mask 的非等待真位来自原始 mask |
-| `task5ChestBit_true_implies_raw`, `task5MechanismBit_true_implies_raw`, `task5AttackBit_true_implies_raw`, `task5ExitBit_true_implies_raw` | Task 5 各优先位为真时对应原始位也为真 |
-| `task5NormalizedMask_nonwait_conservative` | Task 5 最终 mask 的非等待真位来自原始 mask |
-| `normalizedMask_sound`, `task5NormalizedMask_sound` | 原始 mask 满足 readiness 契约时，最终 mask 仍满足该契约 |
-| `mask_respecting_policy_selects_ready`, `task5_mask_respecting_policy_selects_ready` | 尊重 mask 的基础/Task 5 策略只会选择 ready option |
-| `mask_respecting_policy_ready_resolution`, `task5_mask_respecting_policy_ready_resolution` | 策略输出存在兼容解析目标且该 option 环境可执行 |
-
-#### Shield、颜色模式、出口与路线一致性
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `shield_preserves_safe_move` | RL primitive shield 不改变本来安全的移动 |
-| `shield_idempotent` | RL primitive shield 幂等 |
-| `shield_move_output_safe` | RL shield 的最终移动目标满足 `safeTile` |
-| `exitPushAllowed_not_walkable` | 合法出门推动作不能同时属于普通室内可走分支 |
-| `shielded_total` | 每个 Rule-based 可控动作都有 shield 输出 |
-| `shielded_deterministic` | Rule-based shield 对固定状态和输入至多有一个输出 |
-| `shielded_exists_unique` | Rule-based shield 对可控动作存在且唯一 |
-| `color_mode_base_features_invariant`, `color_mode_task5_features_invariant` | 感知颜色模式不变性推出基础/Task 5 编码不变 |
-| `color_mode_base_policy_output_invariant`, `color_mode_task5_policy_output_invariant` | 编码不变进一步推出确定策略输出不变 |
-| `buttonGate_exit_requires_pressed` | 可用按钮门要求目标按钮已经按下 |
-| `allMonstersAndKey_exit_requires_resources` | 可用清怪钥匙门要求钥匙充足且怪物为空 |
-| `itemGate_exit_requires_item` | 可用装备门要求持有指定物品 |
-| `fullEnvStep_useExit_has_usable_exit` | `useExit` 完整步骤必定对应某个可用出口对象 |
-| `task1_route_certificates_share_trace` 至 `task5_route_certificates_share_trace` | 每关 Rule/RL 证书计划和最终状态相同 |
-| `all_route_certificates_share_trace` | 一次性汇总五关双路线证书一致性 |
-
-#### 有界搜索可靠性、完备性与计划提取
-
-| 定理 | 已证明性质 |
-| --- | --- |
-| `mem_safeActionsFrom_iff` | 计算出的安全动作等价于“四向移动且下一格可走” |
-| `mem_safeSuccessors_iff` | 安全后继成员等价于存在一条合法安全移动 |
-| `mem_breadthFrontier_iff_positionReachable` | 深度层成员关系与恰好该深度的 `PositionReachable` 等价 |
-| `breadthFrontier_complete` | 每个指定深度可达位置都出现在该层 |
-| `breadthFrontier_sound` | 该层中的每个位置都在指定深度可达 |
-| `breadth_search_complete` | 存在指定深度可达目标时搜索一定命中 |
-| `breadth_search_sound` | 搜索命中时确实存在指定深度可达目标 |
-| `breadth_search_sound_and_complete` | 搜索命中与 `PlannerGoalReachable` 双向等价 |
-| `breadthFindsGoal_eq_true_iff` | 可计算 Bool 搜索返回真当且仅当存在指定深度可达目标 |
-| `safeMovePlan_positionReachable` | 安全动作计划推出同长度位置可达证明 |
-| `positionReachable_has_safeMovePlan` | 位置可达证明可提取等长安全动作计划 |
-| `safeMovePlan_exec` | 安全动作计划可按公共 `Exec` 语义执行到目标 |
-| `verifiedSearchResult_sound` | 搜索结果证书中的计划可执行且目标属于目标集合 |
-| `breadth_found_has_verified_plan` | frontier 命中可构造计划长度等于搜索深度的结果证书 |
-| `verified_search_result_iff_reachable` | 存在结果证书当且仅当某个深度存在可达目标 |
-
-上述“完备性”是相对于固定状态、固定深度和 `PositionReachable` 安全移动关系的精确结论，
-不表示任意策略、任意 PPO 权重或任意地图都必然完成任务。
-
-## 5. 五关目标和证书结论
-
-| 任务目标 | 目标字段 | 公共轨迹 | Rule-based 证书 | RL-based 证书 |
-| --- | --- | --- | --- | --- |
-| `Task1Goal` | 完成世界、至少取 1 把钥匙、开 1 个宝箱 | `task1Plan` / `task1_safe_execution` | `ruleTask1Certificate` | `rlTask1Certificate` |
-| `Task2Goal` | 完成世界、杀 1 怪、取 1 钥匙、开 1 箱 | `task2Plan` / `task2_safe_execution` | `ruleTask2Certificate` | `rlTask2Certificate` |
-| `Task3Goal` | 完成世界、换房至少 5 次、杀怪、取钥匙、开箱 | `task3Plan` / `task3_safe_execution` | `ruleTask3Certificate` | `rlTask3Certificate` |
-| `Task4Goal` | 完成世界、两次开关、取钥匙、持剑、杀怪、开 3 箱 | `task4Plan` / `task4_safe_execution` | `ruleTask4Certificate` | `rlTask4Certificate` |
-| `Task5Goal` | 完成世界、开 4 箱、换房至少 5 次、按按钮、取钥匙 | `task5Plan` / `task5_safe_execution` | `ruleTask5Certificate` | `rlTask5Certificate` |
-
-两条路线共享相同的环境状态、计划、完整转移和目标谓词。路线特有文件分别证明：
-
-- Rule-based 在关键状态能够构造符合规则语义的 `RuleGoal`；
-- RL-based 在关键状态的最终 mask 允许预期 option，resolver 成功，并且环境对象确实 ready；
-- 两条路线最终都把公共 `SafeFullExec` 封装为同一种 `TaskCertificate`；
-- `all_route_certificates_share_trace` 进一步证明五关的两类证书逐关共享计划和最终状态。
-
-## 6. 形式化边界
-
-Lean 形式化从视觉抽取后的公共 `SymbolicState` 开始。当前证明覆盖：
-
-- 符号环境对象、资源、门、机关、伤害、失败和执行轨迹；
-- Rule-based 目标合法性、优先链接口、planner 第一步、executor 和 safety shield；
-- RL 状态投影、特征长度和值域、action mask、option 解析、task_id 接口和 primitive shield；
-- 两条路线在五个参考任务上的关键策略检查点和安全通关证书；
-- 轨迹组合、进度单调、mask 非空与可靠性、shield 函数性、颜色模式提升和门前置条件；
-- 相对于 `PositionReachable` 的有界搜索可靠性、完备性以及可执行计划提取。
-
-当前证明不包含：
-
-- 对具体 Python/CV 代码的逐行等价证明；
-- 对所有像素输入无条件保证视觉识别正确；
-- 对 PPO 训练收敛、任意权重或任意随机种子必然通关的证明；
-- 对 Python primitive 队列和每一帧连续运动的 Lean 重放。
-
-神经网络被视为满足 `RespectsMask` 或 `Task5RespectsMask` 的不透明策略函数。
-因此 RL 结论验证模型外围符号接口和一条认证路线，不声称任意模型权重都会自动选择该路线。
-
-## 7. 验证方法
-
-在项目根目录执行：
+仓库同时提供 Lean DSL 和 TOML 两种 Lake 配置，使用固定工具链验证：
 
 ```powershell
-lake build formalization
-```
-
-逐文件检查：
-
-```powershell
-lake env lean .\formalization\Environment.lean
-lake env lean .\formalization\Rule_based_Strategy.lean
-lake env lean .\formalization\Rule_based_TaskProofs.lean
-lake env lean .\formalization\RL_based_Strategy.lean
-lake env lean .\formalization\RL_based_TaskProofs.lean
-lake env lean .\formalization\Additional_Proofs.lean
-```
-
-检查未完成证明占位：
-
-```powershell
+lake -f lakefile.lean build formalization
+lake -f lakefile.toml build formalization
 rg -n "\b(sorry|admit|axiom)\b" .\formalization -g "*.lean"
 ```
 
-有效结果应满足：
-
-1. `lake build formalization` 退出码为 0；
-2. 六个 Lean 文件均无编译错误；
-3. `sorry|admit|axiom` 扫描无匹配；
-4. 两条路线都存在 Task 1-5 的 `TaskCertificate` 和总完成定理。
+两个构建命令都应成功，最后一条命令应无匹配。`lean-toolchain` 固定为
+`leanprover/lean4:v4.29.0-rc8`，确保助教环境能够复现相同的 elaboration 结果。
