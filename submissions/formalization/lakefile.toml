@@ -1,0 +1,6 @@
+name = "math_logic_formalization"
+buildDir = ".lake/build_rl"
+
+[[lean_lib]]
+name = "formalization"
+roots = ["Environment", "Rule_based_Strategy", "Rule_based_TaskProofs", "Additional_Proofs"]

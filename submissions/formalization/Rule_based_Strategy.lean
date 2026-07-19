@@ -1,4 +1,4 @@
-import formalization.Environment
+import Environment
 
 open MathLogic.Formalization
 

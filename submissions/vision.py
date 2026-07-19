@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from rule_based_submission.color_vision import (
+from submissions.color_vision import (
     BUTTON_DOWN,
     BUTTON_UP,
     CHEST_BAND,
@@ -49,13 +49,13 @@ from rule_based_submission.color_vision import (
 )
 
 
-from rule_based_submission.color_vision import (
+from submissions.color_vision import (
     SpriteMatch,
     detect_dynamic_sprites,
     infer_color_mode,
     transform_color_image,
 )
-from rule_based_submission.symbolic import AgentMemory, Position, SymbolicState
+from submissions.symbolic import AgentMemory, Position, SymbolicState
 
 
 GridPos = tuple[int, int]

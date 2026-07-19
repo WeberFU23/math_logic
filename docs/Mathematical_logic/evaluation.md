@@ -189,49 +189,6 @@ python utils/evaluate_policy.py \
 
 启用 `--robustness-suite` 后，`--num-envs` 表示每个 task 的总 episode 数。脚本按 60% / 30% / 10% 切分；当数量不能整除时，按最大余数法分配，三类 episode 总数仍等于 `--num-envs`。
 
-需要定向测试时，可用 `--robustness-stages` 选择一个或多个阶段。此时 `--num-envs` 表示每个选中阶段的 episode 数，例如只测试 Task 3 的 spatial 和 color：
-
-```bash
-python utils/evaluate_policy.py \
-  --policy rule_based_submission.agent:Policy \
-  --tasks mathematical_logic/task_3 \
-  --info-mode safe \
-  --robustness-stages spatial color \
-  --num-envs 3
-```
-
-只测试一个阶段时传入单个值，例如 `--robustness-stages spatial` 或 `--robustness-stages color`。
-
-评测时可用 `--visualize-dir` 保存逐 episode 的 GIF。定位鲁棒性失败时，建议配合 `--visualize-failures-only`，只保留失败回放：
-
-```bash
-python utils/evaluate_policy.py \
-  --policy rule_based_submission.agent:Policy \
-  --tasks mathematical_logic/task_3 \
-  --info-mode safe \
-  --robustness-stages spatial \
-  --num-envs 3 \
-  --visualize-dir runs/task3_spatial_replays \
-  --visualize-failures-only \
-  --visualize-stride 4 \
-  --visualize-fps 12
-```
-
-GIF 展示策略实际收到的像素观测，并叠加阶段、seed、动作、累计奖励、策略内部 goal/room 和最近环境事件。叠加层使用完整环境信息仅供离线排错，不会传给策略；`--info-mode safe` 的评测约束保持不变。
-需要在终端同步输出规则策略的逐步决策日志时，加入 `--debug-policy`：
-
-```bash
-python utils/evaluate_policy.py \
-  --policy rule_based_submission.agent:Policy \
-  --tasks mathematical_logic/task_5 \
-  --info-mode safe \
-  --robustness-stages spatial \
-  --num-envs 3 \
-  --debug-policy
-```
-
-该参数会在 policy 的类或 `make_policy()` 支持 `debug=True` 时启用日志；不支持该参数的通用提交仍按原方式加载。
-
 | 阶段         | 比例 | `--num-envs 100` | 观测             | 地图                   |
 | ------------ | ---: | -----------------: | ---------------- | ---------------------- |
 | `original` |  60% |                 60 | `default`      | 原始地图               |
@@ -352,15 +309,9 @@ mathematical_logic/task_3 [spatial]
 | `--max-steps`        | 任务配置         | 覆盖最大步数                                                      |
 | `--action-repeat`    | 任务配置         | 覆盖动作重复次数                                                  |
 | `--render-mode`      | `None`         | 可选`rgb_array`                                                 |
-| `--debug-policy`     | 关闭             | policy 支持 `debug=True` 时输出逐步决策日志                       |
 | `--info-mode`        | `safe`         | `safe` 用于正式测评，`full` 用于本地调试                      |
 | `--obs-variants`     | `default`      | 普通模式使用的像素变体                                            |
 | `--robustness-suite` | 关闭             | 启用固定 60% / 30% / 10% 套件                                     |
-| `--robustness-stages` | 无               | 启用鲁棒性模式，仅运行指定的 `original`、`spatial`、`color` 阶段       |
-| `--visualize-dir`    | 无               | 保存每个 episode 的 GIF 回放到指定目录                              |
-| `--visualize-stride` | `4`              | 每隔多少环境步捕获一帧                                               |
-| `--visualize-fps`    | `12`             | GIF 回放帧率                                                        |
-| `--visualize-failures-only` | 关闭      | 只保存失败 episode 的回放                                            |
 | `--json-out`         | 无               | 写出详细 JSON 结果                                                |
 
 ## 九、报告要求

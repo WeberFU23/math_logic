@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from rule_based_submission.planner import next_move_toward
-from rule_based_submission.symbolic import (
+from submissions.planner import next_move_toward
+from submissions.symbolic import (
     ACTION_A,
     ACTION_DOWN,
     ACTION_LEFT,

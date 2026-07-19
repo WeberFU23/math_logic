@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from rule_based_submission.symbolic import (
+from submissions.symbolic import (
     Goal,
     GoalKind,
     MOVE_DELTAS,

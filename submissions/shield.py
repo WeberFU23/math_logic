@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from rule_based_submission.planner import is_walkable
-from rule_based_submission.symbolic import (
+from submissions.planner import is_walkable
+from submissions.symbolic import (
     ACTION_A,
     ACTION_B,
     ACTION_NOOP,
@@ -22,5 +22,4 @@ def shield(action: int, state: SymbolicState) -> int:
     if not is_walkable(candidate, state, allow_goal=True):
         return ACTION_NOOP
     return action
-
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from rule_based_submission.executor import action_for_goal
-from rule_based_submission.planner import is_walkable
-from rule_based_submission.shield import shield
-from rule_based_submission.strategy import HighLevelPolicy, RuleBasedPolicy
-from rule_based_submission.symbolic import (
+from submissions.executor import action_for_goal
+from submissions.planner import is_walkable
+from submissions.shield import shield
+from submissions.strategy import HighLevelPolicy, RuleBasedPolicy
+from submissions.symbolic import (
     ACTION_A,
     ACTION_B,
     ACTION_NOOP,
@@ -24,7 +24,7 @@ from rule_based_submission.symbolic import (
     manhattan,
     next_position,
 )
-from rule_based_submission.vision import perceive, reset_vision
+from submissions.vision import perceive, reset_vision
 
 
 class Policy:

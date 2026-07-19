@@ -1,4 +1,4 @@
-import formalization.Rule_based_Strategy
+import Rule_based_Strategy
 
 open MathLogic.Formalization
 open MathLogic.Formalization.ReferenceTasks

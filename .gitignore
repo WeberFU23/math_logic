@@ -1,9 +1,9 @@
 .venv/
+**/.lake/
 
 *.egg-info
 dist/
 build/
-.lake/
 __pycache__/
 *.pyc
 *.pyo

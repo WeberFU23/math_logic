@@ -12,16 +12,16 @@
                               strategy.py (选择 Goal)
                                            │
                                            ▼
-                              planner.py  (BFS 寻路)
+                              planner.py  (根据 Goal 用 BFS 确定路径)
                                            │
                                            ▼
-                              executor.py (Goal → 动作)
+                              executor.py (路径 → 动作)
                                            │
                                            ▼
                               shield.py   (安全检查)
                                            │
                                            ▼
-                              agent.py    (战斗反射、卡墙处理等)
+                              agent.py    (具体执行细节)
 ```
 
 ---
@@ -359,11 +359,7 @@
 - 怪物消失或数量减少 → 解锁（可能已被击杀）
 - 怪物位置变化时通过最小化曼哈顿距离追踪同一目标
 
-### 7.4 警戒战斗 (`_alert_combat_goal`)
-
-在怪物进入**曼哈顿距离 ≤ 2** 且无墙体阻隔时主动迎击（不等它贴脸），条件是有剑且血量 > 1。
-
-### 7.5 卡墙检测 (`_observe_motion`)
+### 7.4 卡墙检测 (`_observe_motion`)
 
 **纯视觉方式检测**（不使用 `info`）：
 
@@ -372,44 +368,6 @@
 3. 累计 ≥ 2 帧后判定为被阻挡
 4. 记录被阻挡的动作和方向，触发后续**脱困机制**
 5. 最大连续检测 6 帧后重置
-
-房间切换或位移 ≥ 0.5px 时清零计数器。
-
-### 7.6 对齐微调 (`_alignment_action`)
-
-当玩家像素中心偏离瓦片中心超过阈值时，发出垂直于移动方向的微调动作。
-
-**触发条件**：玩家被阻挡（`_blocked_ticks > 0`）且移动方向前方有狭窄通道。
-
-**水平移动（LEFT/RIGHT）时**：
-- 前方上下两侧均被阻挡（如走廊）→ 偏离中心 > 2px 时向中心微调
-- 仅上方被阻挡 → 偏上时向下微调（远离墙壁）
-- 仅下方被阻挡 → 偏下时向上微调（远离墙壁）
-
-**垂直移动（UP/DOWN）时**：同理，检查左右两侧。
-
-### 7.7 脱困动作 (`_unstick_action`)
-
-移动被阻挡且对齐微调不适用时的回退策略：
-
-1. **出口角落绕行** (`_exit_corner_nudge`)：若目标是边界出口且前方角落被阻挡，沿边界垂直方向绕行
-2. **通用脱困**：尝试其他三个方向，选择：
-   - 可行走
-   - 不走向怪物（距离 > 1）
-   - 最接近目标的瓦片
-   - 优先同轴方向（减少蛇形）
-
-### 7.8 出口对齐 (`_exit_alignment_action`)
-
-到达出口瓦片但像素未居中对齐门洞时的微调：
-
-- 北/南出口（row = 0 或 7，col ∈ {4, 5}）：调整玩家水平位置（左右微调）
-- 西/东出口（col = 0 或 9，row ∈ {3, 4}）：调整玩家垂直位置（上下微调）
-- 容差 ±1.5px
-
-### 7.9 穿越出口中断
-
-队列执行期间若正在穿越出口且检测到新怪物出现，立即清空队列并重新规划退出目标，防止盲目走进有怪物的房间。
 
 ---
 
@@ -427,136 +385,3 @@
 6. **模块化设计**：`HighLevelPolicy` 抽象基类允许未来用 RL 策略替换 `RuleBasedPolicy`，不影响感知、规划、执行和安全盾层
 
 ---
-
-## 9. 测试与调试命令行
-
-以下命令在项目根目录执行，PowerShell 使用 `` ` `` 换行。
-
-### 9.1 快速功能测试
-
-```powershell
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_1 `
-  --num-envs 5
-```
-
-### 9.2 调试模式（获取完整环境 info）
-
-```powershell
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_1 `
-  --info-mode full `
-  --num-envs 3
-```
-
-### 9.3 正式鲁棒性测评
-
-```powershell
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_1 mathematical_logic/task_2 mathematical_logic/task_3 mathematical_logic/task_4 mathematical_logic/task_5 `
-  --info-mode safe `
-  --robustness-suite `
-  --num-envs 100 `
-  --json-out results/robustness_suite_eval.json
-```
-
-### 9.4 定向鲁棒性测试
-
-```powershell
-# 只测 spatial 阶段（地图变体）
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_3 `
-  --info-mode safe `
-  --robustness-stages spatial `
-  --num-envs 3
-
-# 只测 color 阶段（颜色变体）
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_3 `
-  --info-mode safe `
-  --robustness-stages color `
-  --num-envs 3
-
-# 同时测多个阶段
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_3 `
-  --info-mode safe `
-  --robustness-stages spatial color `
-  --num-envs 3
-```
-
-### 9.5 可视化回放（GIF）
-
-```powershell
-# 保存逐 episode 的 GIF
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_3 `
-  --info-mode safe `
-  --robustness-stages spatial `
-  --num-envs 3 `
-  --visualize-dir runs/task3_spatial_replays `
-  --visualize-stride 4 `
-  --visualize-fps 12
-
-# 只保留失败回放
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_3 `
-  --info-mode safe `
-  --robustness-stages spatial `
-  --num-envs 3 `
-  --visualize-dir runs/task3_spatial_replays `
-  --visualize-failures-only
-```
-
-### 9.6 策略决策日志
-
-```powershell
-python utils/evaluate_policy.py `
-  --policy rule_based_submission.agent:Policy `
-  --tasks mathematical_logic/task_5 `
-  --info-mode safe `
-  --robustness-stages spatial `
-  --num-envs 3 `
-  --debug-policy
-```
-
-### 9.7 视觉感知调试器
-
-```powershell
-python -m rule_based_submission.vision `
-  --task mathematical_logic/task_1 `
-  --seed 0
-```
-
-启动 pygame 交互窗口，按键：
-- 方向键=移动  Z=A(剑)  X=B(盾)
-- V=切换叠加层（瓦片分类 + 精灵检测边框）
-- C=打印当前帧检测结果
-- Esc=退出
-
-### 9.8 参数速查
-
-| 参数 | 用途 |
-|---|---|
-| `--policy` | 共享策略文件或模块（如 `rule_based_submission.agent:Policy`） |
-| `--task-policy` | 单任务专用策略 `TASK_ID=POLICY_SPEC`，可重复 |
-| `--tasks` | 被测任务列表 |
-| `--num-envs` | 普通模式=每变体 episode 数；鲁棒性模式=每任务总 episode 数 |
-| `--info-mode safe/full` | safe=正式测评（仅物品栏+last_reward）；full=本地调试（全量 info） |
-| `--robustness-suite` | 启用 60/30/10 固定比例套件 |
-| `--robustness-stages original/spatial/color` | 仅运行指定阶段 |
-| `--debug-policy` | 启用策略逐步决策日志 |
-| `--visualize-dir` | 保存 GIF 回放目录 |
-| `--visualize-failures-only` | 仅保存失败 episode |
-| `--visualize-stride` | 每隔 N 帧捕获一帧（默认 4） |
-| `--visualize-fps` | GIF 帧率（默认 12） |
-| `--json-out` | 输出详细 JSON 结果文件 |
-| `--seed` | episode 种子起点 |

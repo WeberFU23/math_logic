@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from rule_based_submission.planner import bfs_path, is_reachable, nearest
-from rule_based_submission.symbolic import AgentMemory, Goal, GoalKind, Position, RoomCoord, SymbolicState, globalize, manhattan
+from submissions.planner import bfs_path, is_reachable, nearest
+from submissions.symbolic import AgentMemory, Goal, GoalKind, Position, RoomCoord, SymbolicState, globalize, manhattan
 
 
 class HighLevelPolicy(ABC):
