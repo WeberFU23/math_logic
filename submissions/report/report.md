@@ -1,7 +1,7 @@
 # 数理逻辑大作业项目报告
 
-测试时将`submissions`文件夹放在与`docs`文件夹同级的位置即可。
-维护的仓库见：https://github.com/WeberFU23/math_logic
+测试时将`submissions`文件夹放在与`docs`文件夹同级的位置即可。  
+维护的仓库见：https://github.com/WeberFU23/math_logic。提交的版本为Commit 31741b9。
 
 ## 规则驱动的策略设计
 
